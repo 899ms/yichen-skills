@@ -39,8 +39,21 @@
 18. 把一条公开 X Post 或 Thread 链接转成经过验收的 3:4 图片切片与成片，完整嵌入原生视频并在有源音轨时保留原声（`yichen-x-slicer`）
 19. 在 Windows 本机实验性、只读分析用户明确提供的脱机微信明文快照，不访问进程、不处理密钥、不解密（`yichen-wechat-windows-reader`）
 20. 让 ChatGPT Pro 负责调研、架构和只读审查，Codex 独占本地代码修改和测试（`codex-chatgpt`）
+21. 在匹配版本的 Apple Silicon Mac 上无界面生成、修改剪映原生草稿，并按明确要求导出原生 MP4（`yichen-jianying-edit`；须另行取得私有核心项目）
 
 ## 包含的技能
+
+### `yichen-jianying-edit`
+
+Jianying Headless 私有预览的本地收录入口：
+
+- Agent Skill 与草稿生成、编辑和导出核心分开，独立安装时通过 `JIANYING_HEADLESS_ROOT` 定位核心项目。
+- 需要 [mcncarl/jianying-headless](https://github.com/mcncarl/jianying-headless) 的访问权限、单独安装的匹配版剪映，以及固定源码/运行库哈希。
+- 不收录官方库、效果包、账号资料、用户媒体或 ASR 凭据。
+- 默认交付草稿；原生 MP4 是另行明确要求的步骤。
+- 复合片段首页登记仍被阻止，冻结快照导出不等于原生保存持久化通过。
+
+完整说明见 [yichen-jianying-edit/README.md](./yichen-jianying-edit/README.md)。本次仅本地收录；“私有推送”授权不能用于将此改动推到公开总仓库。没有改动总仓库的统一许可证。
 
 ### `yichen-wechat-windows-reader`
 实验性读取用户明确提供且已获授权的脱机 Windows 微信明文 SQLite 快照：

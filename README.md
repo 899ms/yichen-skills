@@ -39,8 +39,21 @@ To request commercial authorization, contact me on WeChat at `yichen365ai` and i
 18. Turn one public X Post or Thread URL into verified 3:4 image slices and a finished video that embeds complete native video visuals and preserves their original audio when present (`yichen-x-slicer`)
 19. Experimentally analyze a user-supplied, detached plaintext Windows Weixin snapshot locally and read-only, without process access, keys, or decryption (`yichen-wechat-windows-reader`)
 20. Orchestrate ChatGPT Pro research, architecture, and read-only project review while Codex alone edits and tests (`codex-chatgpt`)
+21. Generate and edit native Jianying drafts on a supported Apple Silicon Mac, with optional native MP4 export (`yichen-jianying-edit`; private core checkout required)
 
 ## Included Skills
+
+### `yichen-jianying-edit`
+
+Local collection entry for the private Jianying Headless preview:
+
+- Separates the Agent Skill from the native draft-building/editing/export core.
+- Requires authorized access to [mcncarl/jianying-headless](https://github.com/mcncarl/jianying-headless), a separately installed supported Jianying version, and fixed source/runtime hashes.
+- Contains no official library, effect package, account data, user media, or ASR credential.
+- Defaults to draft delivery; native MP4 export is a separate explicitly requested step.
+- Compound draft registration remains blocked; frozen-snapshot export is not editor-save acceptance.
+
+See [yichen-jianying-edit/README.md](./yichen-jianying-edit/README.md). This addition is prepared locally only; it must not be pushed to the public collection under private-only publication authorization. No repository-wide license changes are included.
 
 ### `yichen-wechat-windows-reader`
 Experimental reader for an authorized, detached plaintext Windows Weixin SQLite snapshot explicitly supplied by the user:

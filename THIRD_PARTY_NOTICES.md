@@ -152,6 +152,15 @@ This repository references and adapts ideas/workflows from external projects.
   - Users must identify the runtime's distributor and check its applicable license, service terms, redistribution rights, and version-specific notices before installation or use.
   - This repository's license and this notice are not a license grant for the external CLI.
 
+## 13) Jianying Headless external private core
+
+- Project: https://github.com/mcncarl/jianying-headless (authorized private access required).
+- Skill: `yichen-jianying-edit`; this collection contains only the Skill, its wrappers and speech-plan helpers.
+- The separate core preserves its jy-draftc MIT interface attribution and historical pyJianYingDraft Apache-2.0 relationship. It does not claim clean-room provenance.
+- No Jianying application, official library, native resource package, account data, user media, ASR executor or service credential is distributed here.
+- The core's private preview has not selected a unified license for its original portions. This collection's license cannot grant access or rights to that separate core, the proprietary editor, native materials or paid services.
+- This local-only addition does not change the license of any existing collection directory; public collection push requires a separate resolution of the user's private-only publication scope.
+
 ## Notes
 
 - This repository maintains its own license (`LICENSE`) for original contributions. It is personal-learning and non-commercial only.
