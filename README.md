@@ -45,7 +45,7 @@ To request commercial authorization, contact me on WeChat at `yichen365ai` and i
 
 ### `yichen-jianying-edit`
 
-Local collection entry for the private Jianying Headless preview:
+Public Skill entry for the separately authorized private Jianying Headless core:
 
 - Separates the Agent Skill from the native draft-building/editing/export core.
 - Requires authorized access to [mcncarl/jianying-headless](https://github.com/mcncarl/jianying-headless), a separately installed supported Jianying version, and fixed source/runtime hashes.
@@ -53,7 +53,7 @@ Local collection entry for the private Jianying Headless preview:
 - Defaults to draft delivery; native MP4 export is a separate explicitly requested step.
 - Compound draft registration remains blocked; frozen-snapshot export is not editor-save acceptance.
 
-See [yichen-jianying-edit/README.md](./yichen-jianying-edit/README.md). This addition is prepared locally only; it must not be pushed to the public collection under private-only publication authorization. No repository-wide license changes are included.
+See [yichen-jianying-edit/README.md](./yichen-jianying-edit/README.md). The Skill's original portions follow the existing personal-learning and non-commercial terms, with third-party licenses preserved. Publishing this entry does not make the core public or change other directories' licenses.
 
 ### `yichen-wechat-windows-reader`
 Experimental reader for an authorized, detached plaintext Windows Weixin SQLite snapshot explicitly supplied by the user:

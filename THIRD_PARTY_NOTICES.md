@@ -158,8 +158,8 @@ This repository references and adapts ideas/workflows from external projects.
 - Skill: `yichen-jianying-edit`; this collection contains only the Skill, its wrappers and speech-plan helpers.
 - The separate core preserves its jy-draftc MIT interface attribution and historical pyJianYingDraft Apache-2.0 relationship. It does not claim clean-room provenance.
 - No Jianying application, official library, native resource package, account data, user media, ASR executor or service credential is distributed here.
-- The core's private preview has not selected a unified license for its original portions. This collection's license cannot grant access or rights to that separate core, the proprietary editor, native materials or paid services.
-- This local-only addition does not change the license of any existing collection directory; public collection push requires a separate resolution of the user's private-only publication scope.
+- The Skill and core's original portions use personal-learning and non-commercial terms; upstream MIT / Apache-2.0 licenses remain in effect for their respective portions. This collection's license cannot grant access or rights to the separate private core, proprietary editor, native materials or paid services.
+- Public distribution is limited to this Skill's instructions, entrypoint and speech-plan helpers. The core remains private, and existing collection directories' licenses are unchanged.
 
 ## Notes
 

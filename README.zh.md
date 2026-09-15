@@ -45,7 +45,7 @@
 
 ### `yichen-jianying-edit`
 
-Jianying Headless 私有预览的本地收录入口：
+Jianying Headless 私有核心项目的公开 Skill 入口：
 
 - Agent Skill 与草稿生成、编辑和导出核心分开，独立安装时通过 `JIANYING_HEADLESS_ROOT` 定位核心项目。
 - 需要 [mcncarl/jianying-headless](https://github.com/mcncarl/jianying-headless) 的访问权限、单独安装的匹配版剪映，以及固定源码/运行库哈希。
@@ -53,7 +53,7 @@ Jianying Headless 私有预览的本地收录入口：
 - 默认交付草稿；原生 MP4 是另行明确要求的步骤。
 - 复合片段首页登记仍被阻止，冻结快照导出不等于原生保存持久化通过。
 
-完整说明见 [yichen-jianying-edit/README.md](./yichen-jianying-edit/README.md)。本次仅本地收录；“私有推送”授权不能用于将此改动推到公开总仓库。没有改动总仓库的统一许可证。
+完整说明见 [yichen-jianying-edit/README.md](./yichen-jianying-edit/README.md)。本 Skill 原创部分沿用个人学习和非商业条款，第三方许可证单独保留；公开 Skill 不代表核心项目公开，也没有改变其他目录的许可。
 
 ### `yichen-wechat-windows-reader`
 实验性读取用户明确提供且已获授权的脱机 Windows 微信明文 SQLite 快照：
