@@ -17,6 +17,8 @@ This repository is available only for personal learning and non-commercial perso
 
 To request commercial authorization, contact me on WeChat at `yichen365ai` and include `Commercial Authorization` in the verification message. Sending a contact request does not itself grant permission; commercial use is allowed only after you receive explicit written authorization.
 
+Join **TradeWinds**, Yichen’s paid community, to unlock commercial authorization for all Skills in this repository and connect with more peers born in 2005 or later and experienced practitioners with proven results. Contact Yichen on WeChat (`yichen365ai`) for membership pricing. The specific scope is subject to written authorization; third-party components remain governed by their original licenses.
+
 ## What This Repo Does
 
 1. Upload Obsidian/Markdown articles to X Articles drafts (`yichen-x-article-draft-uploader`)
