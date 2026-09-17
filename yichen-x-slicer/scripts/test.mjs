@@ -118,6 +118,8 @@ function writeNegativeOffsetFixture(directory, relativePath) {
     '-f', 'lavfi', '-i', 'testsrc2=size=320x180:rate=30:duration=1.5',
     '-f', 'lavfi', '-i', 'sine=frequency=980:sample_rate=48000:duration=1.2',
     '-map', '0:v:0', '-map', '1:a:0',
+    // Preserve the delayed first video frame instead of duplicating it to t=0.
+    '-fps_mode:v', 'passthrough',
     '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '18', '-pix_fmt', 'yuv420p',
     '-c:a', 'aac', '-b:a', '128k',
     '-t', '1.8', '-avoid_negative_ts', 'disabled', '-movflags', '+faststart',
