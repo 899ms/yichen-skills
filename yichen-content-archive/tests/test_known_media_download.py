@@ -6,6 +6,7 @@ import pathlib
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -100,7 +101,8 @@ class KnownMediaDownloadTests(unittest.TestCase):
         self.assertTrue(requested.is_dir())
 
     def test_generic_backend_is_single_url_anonymous(self):
-        command = MEDIA.yt_dlp_common(60)
+        with mock.patch.object(MEDIA, "find_yt_dlp", return_value="yt-dlp"):
+            command = MEDIA.yt_dlp_common(60)
         self.assertIn("--ignore-config", command)
         self.assertIn("--no-playlist", command)
         self.assertIn("--no-cookies-from-browser", command)
