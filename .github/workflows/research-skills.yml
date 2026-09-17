@@ -10,7 +10,12 @@ name: Research skills contracts
       - 'yichen-bookmarks-export/**'
       - 'yichen-asr/**'
       - 'plugins/yichen-grok-consult/**'
-      - 'codex-chatgpt/**'
+      - 'yichen-codex-chatgpt/**'
+      - 'yichen-x-slicer/**'
+      - 'yichen-mac-wechat-dual-open/**'
+      - 'yichen-agent-memory/**'
+      - 'scripts/compare_installed_skills.py'
+      - 'docs/skill-maintenance.md'
       - 'README.md'
       - 'README.zh.md'
       - 'THIRD_PARTY_NOTICES.md'
@@ -25,7 +30,12 @@ name: Research skills contracts
       - 'yichen-bookmarks-export/**'
       - 'yichen-asr/**'
       - 'plugins/yichen-grok-consult/**'
-      - 'codex-chatgpt/**'
+      - 'yichen-codex-chatgpt/**'
+      - 'yichen-x-slicer/**'
+      - 'yichen-mac-wechat-dual-open/**'
+      - 'yichen-agent-memory/**'
+      - 'scripts/compare_installed_skills.py'
+      - 'docs/skill-maintenance.md'
       - 'README.md'
       - 'README.zh.md'
       - 'THIRD_PARTY_NOTICES.md'
@@ -80,6 +90,17 @@ jobs:
             -s yichen-web-research/tests \
             -p 'test_*.py'
 
+      - name: Run archive and no-client-control contracts
+        run: |
+          python -m unittest discover -s yichen-content-archive/tests -p 'test_*.py'
+          python -m unittest discover -s yichen-mac-wechat-dual-open/tests -p 'test_*.py'
+
+      - name: Run X source and media contracts
+        run: node yichen-x-slicer/scripts/test.mjs
+
+      - name: Check read-only version comparison
+        run: python scripts/compare_installed_skills.py --local-root /nonexistent-skills-root
+
       - name: Run Grok authenticated-fallback policy contracts
         run: |
           node --check plugins/yichen-grok-consult/mcp/server.mjs
@@ -99,7 +120,11 @@ jobs:
               Path('yichen-web-research'),
               Path('yichen-unified-search'),
               Path('plugins/yichen-grok-consult'),
-              Path('codex-chatgpt'),
+              Path('yichen-codex-chatgpt'),
+              Path('yichen-content-archive'),
+              Path('yichen-agent-memory'),
+              Path('yichen-x-slicer'),
+              Path('yichen-mac-wechat-dual-open'),
           ]
           explicit_files = [
               Path('README.md'),

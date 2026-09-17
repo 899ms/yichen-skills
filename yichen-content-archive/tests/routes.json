@@ -47,6 +47,16 @@
     "allowed_branch": "exact-article-parent"
   },
   {
+    "case": "known_x_video_download",
+    "input_kind": "known_urls",
+    "platform": "x",
+    "action": "download",
+    "decision": "route",
+    "route_backend": "public-media-known-url",
+    "allowed_branch": "anonymous-highest-bitrate-mp4",
+    "authentication": "anonymous"
+  },
+  {
     "case": "known_xiaohongshu_read",
     "input_kind": "known_urls",
     "platform": "xiaohongshu",
@@ -65,12 +75,42 @@
     "allowed_branch": "known-url-download"
   },
   {
+    "case": "known_weibo_status_read",
+    "input_kind": "known_urls",
+    "platform": "weibo",
+    "action": "read",
+    "decision": "route",
+    "route_backend": "weibo-known-url",
+    "allowed_branch": "anonymous-single-status-info",
+    "authentication": "anonymous-visitor"
+  },
+  {
+    "case": "known_weibo_video_download",
+    "input_kind": "known_urls",
+    "platform": "weibo",
+    "action": "download",
+    "decision": "route",
+    "route_backend": "weibo-known-url",
+    "allowed_branch": "anonymous-single-video-download",
+    "authentication": "anonymous-visitor"
+  },
+  {
+    "case": "known_public_media_download_generic",
+    "input_kind": "known_urls",
+    "platform": "other_public_media",
+    "action": "download",
+    "decision": "route",
+    "route_backend": "public-media-known-url",
+    "allowed_branch": "anonymous-single-url-ytdlp",
+    "authentication": "anonymous"
+  },
+  {
     "case": "known_wechat_single_read",
     "input_kind": "known_urls",
     "platform": "wechat",
     "action": "read",
     "decision": "route",
-    "route_skill": "yichen-wechat-mp-batch-exporter",
+    "route_skill": "wechat-mp-batch-exporter",
     "allowed_branch": "single-url"
   },
   {
@@ -79,8 +119,26 @@
     "platform": "wechat",
     "action": "archive",
     "decision": "route",
-    "route_skill": "yichen-wechat-mp-batch-exporter",
+    "route_skill": "wechat-mp-batch-exporter",
     "allowed_branch": "download_urls"
+  },
+  {
+    "case": "known_youtube_info",
+    "input_kind": "known_urls",
+    "platform": "youtube",
+    "action": "read",
+    "decision": "route",
+    "route_backend": "youtube-known-url",
+    "allowed_branch": "known-video-info"
+  },
+  {
+    "case": "known_youtube_download",
+    "input_kind": "confirmed_candidates",
+    "platform": "youtube",
+    "action": "download",
+    "decision": "route",
+    "route_backend": "youtube-known-url",
+    "allowed_branch": "known-video-download"
   },
   {
     "case": "known_youtube_subtitles",
@@ -88,7 +146,7 @@
     "platform": "youtube",
     "action": "archive",
     "decision": "route",
-    "route_backend": "yt-dlp",
+    "route_backend": "youtube-known-url",
     "allowed_branch": "known-url-subtitles"
   },
   {
@@ -99,7 +157,7 @@
     "platform": "youtube",
     "action": "archive",
     "decision": "enumerate_then_route",
-    "route_backend": "yt-dlp",
+    "route_backend": "youtube-known-url",
     "allowed_branch": "flat-playlist"
   },
   {
@@ -182,10 +240,8 @@
     "container_scope": "exact",
     "platform": "wechat",
     "action": "archive",
-    "decision": "enumerate_then_route",
-    "route_backend": "wechat-mp-local",
-    "allowed_branch": "exact-account-history",
-    "authentication": "user-completed-local-login"
+    "decision": "unsupported",
+    "reason": "upstream_history_interface_retired"
   },
   {
     "case": "keyword_search_rejected",
@@ -196,7 +252,24 @@
     "reason": "discovery_forbidden"
   },
   {
-    "case": "site_crawl_rejected",
+    "case": "bounded_site_map_then_archive",
+    "input_kind": "known_collection",
+    "container_kind": "bounded_site",
+    "container_scope": "exact_bounded",
+    "platform": "web",
+    "action": "archive",
+    "decision": "enumerate_then_route",
+    "route_backend": "firecrawl-v2-bounded-site",
+    "allowed_branch": "signed-map-preflight-then-explicit-crawl",
+    "authentication": "api-key-only-no-site-login",
+    "bounds": {
+      "required": ["site_url", "path_prefix", "limit", "max_depth"],
+      "max_limit": 100,
+      "max_depth": 3
+    }
+  },
+  {
+    "case": "unbounded_site_crawl_rejected",
     "input_kind": "site_root",
     "platform": "web",
     "action": "crawl",

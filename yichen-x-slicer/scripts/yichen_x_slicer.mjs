@@ -15,6 +15,10 @@ const CANVAS = Object.freeze({ width: 1080, height: 1440, ratio: '3:4' });
 const X_STATUS_HOSTS = new Set(['x.com', 'www.x.com', 'twitter.com', 'www.twitter.com', 'mobile.twitter.com']);
 const X_IMAGE_HOSTS = new Set(['pbs.twimg.com', 'video.twimg.com']);
 const X_VIDEO_HOSTS = new Set(['video.twimg.com']);
+const SOURCE_MARKER_LINE_RE = /^\s*(?:#{1,6}\s*)?(?:thread|post|part)\s*\d+\s*:?\s*$/iu;
+const SOURCE_FENCE_CANDIDATE_RE = /^( {0,3})(`{3,}|~{3,})(.*)$/u;
+const LITERAL_MARKER_ENCODED_RE = /<!--\s*yichen-literal-marker:v1:[0-9a-f]{64}\s*-->\s*$/iu;
+const LITERAL_MARKER_ENCODING_VERSION = 'yichen-literal-marker/v1';
 
 export const DEFAULT_TEMPLATE = 'sunset';
 export const TEMPLATES = Object.freeze([
@@ -57,6 +61,46 @@ function uniqueStrings(values) {
   return [...new Set(values.filter(Boolean).map(String))];
 }
 
+export function sanitizeRemoteUrlForPersistence(value) {
+  let parsed;
+  try {
+    parsed = new URL(String(value));
+  } catch {
+    const error = new Error('persisted_remote_url_invalid');
+    error.code = 'persisted_remote_url_invalid';
+    throw error;
+  }
+  if (!['https:', 'http:'].includes(parsed.protocol)) {
+    const error = new Error(`persisted_remote_url_protocol_rejected:${parsed.protocol}`);
+    error.code = 'persisted_remote_url_protocol_rejected';
+    error.protocol = parsed.protocol;
+    throw error;
+  }
+  parsed.username = '';
+  parsed.password = '';
+  parsed.search = '';
+  parsed.hash = '';
+  return parsed.href;
+}
+
+function persistedRemoteUrlField(key) {
+  return key === 'url' || key === 'endpoint' || key.endsWith('_url');
+}
+
+export function sanitizeRemoteUrlsForPersistence(value, key = '') {
+  if (Array.isArray(value)) return value.map((item) => sanitizeRemoteUrlsForPersistence(item));
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([childKey, childValue]) => [
+      childKey,
+      sanitizeRemoteUrlsForPersistence(childValue, childKey)
+    ]));
+  }
+  if (typeof value === 'string' && value && persistedRemoteUrlField(key)) {
+    return sanitizeRemoteUrlForPersistence(value);
+  }
+  return value;
+}
+
 export function parseStatusUrl(value) {
   let parsed;
   try {
@@ -86,6 +130,7 @@ export function parseArgs(argv) {
     output: null,
     template: DEFAULT_TEMPLATE,
     sourceJson: null,
+    sourceOnly: false,
     video: true,
     listTemplates: false,
     help: false
@@ -98,6 +143,7 @@ export function parseArgs(argv) {
     else if (arg === '--output') options.output = argv[++index];
     else if (arg === '--template') options.template = argv[++index];
     else if (arg === '--source-json') options.sourceJson = argv[++index];
+    else if (arg === '--source-only') options.sourceOnly = true;
     else if (arg === '--video') explicitVideo = true;
     else if (arg === '--images-only') explicitImagesOnly = true;
     else if (arg === '--list-templates') options.listTemplates = true;
@@ -111,6 +157,9 @@ export function parseArgs(argv) {
     throw new Error(`未知模板：${options.template}`);
   }
   if (explicitVideo && explicitImagesOnly) throw new Error('不能同时使用 --video 与 --images-only');
+  if (options.sourceOnly && (explicitVideo || explicitImagesOnly)) {
+    throw new Error('--source-only 不生成切片成片，不能与 --video 或 --images-only 同时使用');
+  }
   options.video = !explicitImagesOnly;
   return options;
 }
@@ -120,11 +169,13 @@ function printHelp() {
     '用法：',
     '  node yichen_x_slicer.mjs --url <X链接> [--template sunset] [--images-only] [--output <目录>]',
     '  node yichen_x_slicer.mjs --url <X链接> --source-json <文件> --output <目录>',
+    '  node yichen_x_slicer.mjs --url <X链接> --source-only --output <目录>',
     '  node yichen_x_slicer.mjs --list-templates',
     '',
     '默认模板：sunset（落日琥珀版）',
     '默认产物：图片组、图片 ZIP 和固定阅读节奏视频；原视频有音轨时保留原声',
     '--images-only：明确只生成图片和图片 ZIP，不生成视频',
+    '--source-only：只生成 source.md、assets 与来源审计，不生成切片、ZIP 或成片',
     ''
   ].join('\n'));
 }
@@ -172,7 +223,10 @@ function nodeCreatedTime(node) {
 function isStrictlyLater(child, parent) {
   const childTime = nodeCreatedTime(child);
   const parentTime = nodeCreatedTime(parent);
-  if (childTime != null && parentTime != null) return childTime > parentTime;
+  if (childTime != null && parentTime != null) {
+    if (childTime > parentTime) return true;
+    if (childTime < parentTime) return false;
+  }
   try {
     return BigInt(String(child.id)) > BigInt(String(parent.id));
   } catch {
@@ -346,21 +400,105 @@ export function selectNativeVideoVariant(item) {
 }
 
 export function ownMedia(node, { strictVideoPoster = true } = {}) {
-  const media = Array.isArray(node?.media?.all)
-    ? node.media.all
-    : [
-        ...(Array.isArray(node?.media?.photos) ? node.media.photos : []),
-        ...(Array.isArray(node?.media?.videos) ? node.media.videos : [])
-      ];
+  const orderedMedia = node?.media?.all;
+  const photos = Array.isArray(node?.media?.photos) ? node.media.photos : [];
+  const videos = Array.isArray(node?.media?.videos) ? node.media.videos : [];
+  const statusId = String(node?.id ?? 'unknown');
+  if (Array.isArray(orderedMedia) && orderedMedia.length === 0 && (photos.length || videos.length)) {
+    const error = new Error(`media_all_inconsistent:${statusId}:empty_all_with_fallback_items`);
+    error.code = 'media_all_inconsistent';
+    error.statusId = statusId;
+    error.reason = 'empty_all_with_fallback_items';
+    error.photoCount = photos.length;
+    error.videoCount = videos.length;
+    throw error;
+  }
+  if (!Array.isArray(orderedMedia) && photos.length && videos.length) {
+    const error = new Error(`mixed_media_order_unavailable:${statusId}`);
+    error.code = 'mixed_media_order_unavailable';
+    error.statusId = statusId;
+    error.photoCount = photos.length;
+    error.videoCount = videos.length;
+    throw error;
+  }
+  const media = Array.isArray(orderedMedia)
+    ? orderedMedia
+    : photos.length ? photos : videos;
+  const mediaSource = Array.isArray(orderedMedia) ? 'all' : photos.length ? 'photos' : 'videos';
   const seen = new Set();
   const selected = [];
-  for (const item of media) {
-    const type = String(item?.type ?? '').toLowerCase();
+  for (let mediaIndex = 0; mediaIndex < media.length; mediaIndex += 1) {
+    const item = media[mediaIndex];
+    if (!item || typeof item !== 'object' || Array.isArray(item) || Object.keys(item).length === 0) {
+      const error = new Error(`media_entry_invalid:${statusId}:${mediaSource}:${mediaIndex}`);
+      error.code = 'media_entry_invalid';
+      error.statusId = statusId;
+      error.mediaSource = mediaSource;
+      error.mediaIndex = mediaIndex;
+      throw error;
+    }
+    const type = String(item.type ?? '').trim().toLowerCase();
     const isImage = type === 'photo' || type === 'image';
     const isVideo = ['video', 'gif', 'animated_gif'].includes(type);
+    if (!isImage && !isVideo) {
+      const error = new Error(`media_type_unknown:${statusId}:${mediaSource}:${mediaIndex}:${type || 'missing'}`);
+      error.code = 'media_type_unknown';
+      error.statusId = statusId;
+      error.mediaSource = mediaSource;
+      error.mediaIndex = mediaIndex;
+      error.mediaId = item.id != null ? String(item.id) : null;
+      error.mediaType = type || null;
+      throw error;
+    }
     const sourceUrl = isImage ? item?.url : isVideo ? item?.thumbnail_url : null;
-    if (!sourceUrl) {
-      if (isVideo && strictVideoPoster) throw new Error(`原生视频 ${String(item?.id ?? 'unknown')} 缺少 thumbnail_url；拒绝静默忽略`);
+    const variant = isVideo ? selectNativeVideoVariant(item) : null;
+    if (typeof sourceUrl !== 'string' || !sourceUrl.trim()) {
+      if (isImage) {
+        const error = new Error(`media_image_url_missing:${statusId}:${mediaSource}:${mediaIndex}`);
+        error.code = 'media_image_url_missing';
+        error.statusId = statusId;
+        error.mediaSource = mediaSource;
+        error.mediaIndex = mediaIndex;
+        error.mediaId = item.id != null ? String(item.id) : null;
+        error.mediaType = type;
+        throw error;
+      }
+      if (strictVideoPoster) {
+        const error = new Error(`media_video_poster_missing:${statusId}:${mediaSource}:${mediaIndex}`);
+        error.code = 'media_video_poster_missing';
+        error.statusId = statusId;
+        error.mediaSource = mediaSource;
+        error.mediaIndex = mediaIndex;
+        error.mediaId = item.id != null ? String(item.id) : null;
+        error.mediaType = type;
+        throw error;
+      }
+      const auditId = item.id != null && String(item.id).trim() ? String(item.id) : null;
+      const auditKey = auditId ?? variant?.url ?? null;
+      if (!auditKey) {
+        const error = new Error(`media_video_audit_marker_unavailable:${statusId}:${mediaSource}:${mediaIndex}`);
+        error.code = 'media_video_audit_marker_unavailable';
+        error.statusId = statusId;
+        error.mediaSource = mediaSource;
+        error.mediaIndex = mediaIndex;
+        error.mediaType = type;
+        throw error;
+      }
+      if (seen.has(auditKey)) continue;
+      seen.add(auditKey);
+      const duration = Number(item?.duration);
+      selected.push({
+        id: auditId,
+        type: 'video',
+        url: null,
+        poster_url: null,
+        width: null,
+        height: null,
+        video_url: variant?.url ?? null,
+        video_duration_seconds: Number.isFinite(duration) && duration > 0 ? duration : null,
+        video_variant: variant,
+        audit_only: true
+      });
       continue;
     }
     const key = String(item?.id ?? sourceUrl);
@@ -376,7 +514,6 @@ export function ownMedia(node, { strictVideoPoster = true } = {}) {
       });
       continue;
     }
-    const variant = selectNativeVideoVariant(item);
     const duration = Number(item?.duration);
     selected.push({
       id: item?.id != null ? String(item.id) : key,
@@ -407,6 +544,85 @@ function quoteMediaMarkers(nodes) {
     ids: uniqueStrings(ids),
     urlHashes: uniqueStrings(urlHashes)
   };
+}
+
+export function quoteMediaCollisionAudit(mediaItems, routingAudit) {
+  const ignoredIds = new Set((routingAudit?.ignored_quote_media_ids ?? []).map(String));
+  const ignoredUrlHashes = new Set((routingAudit?.ignored_quote_media_url_sha256 ?? []).map(String));
+  const collisions = [];
+  for (let index = 0; index < mediaItems.length; index += 1) {
+    const media = mediaItems[index];
+    const mediaId = String(media?.id ?? '');
+    const urlHashes = uniqueStrings([media?.url, media?.poster_url, media?.video_url])
+      .map((url) => sha256Buffer(Buffer.from(url)));
+    const matchingUrlHashes = urlHashes.filter((urlHash) => ignoredUrlHashes.has(urlHash));
+    const idCollision = Boolean(mediaId && ignoredIds.has(mediaId));
+    if (idCollision || matchingUrlHashes.length) {
+      collisions.push({
+        index,
+        media_id: mediaId || null,
+        id_collision: idCollision,
+        url_hash_collisions: matchingUrlHashes
+      });
+    }
+  }
+  return collisions;
+}
+
+export function assertNoQuoteMediaCollisions(mediaItems, routingAudit, phase = 'unknown') {
+  const collisions = quoteMediaCollisionAudit(mediaItems, routingAudit);
+  if (collisions.length) {
+    const error = new Error(`quote_media_collision:${phase}:${collisions.length}`);
+    error.code = 'quote_media_collision';
+    error.phase = phase;
+    error.collisions = collisions;
+    throw error;
+  }
+  return { phase, collision_count: 0 };
+}
+
+function selectedNodeArticleSignalFields(node) {
+  const fields = [];
+  const explicitValues = {
+    article: node?.article,
+    article_id: node?.article_id,
+    article_url: node?.article_url,
+    article_data: node?.article_data,
+    article_preview: node?.article_preview
+  };
+  for (const [field, value] of Object.entries(explicitValues)) {
+    if (value == null || value === false || value === '') continue;
+    fields.push(field);
+  }
+  if (node?.is_article === true) fields.push('is_article');
+  for (const field of ['content_type', 'contentType', 'kind', 'type']) {
+    const value = String(node?.[field] ?? '').trim().toLowerCase();
+    if (value === 'x_article' || value === 'article') fields.push(field);
+  }
+  const cardType = String(node?.card?.type ?? '').trim().toLowerCase();
+  if (cardType === 'x_article' || cardType === 'article') fields.push('card.type');
+  return uniqueStrings(fields);
+}
+
+export function assertNoSelectedArticleSignals(route) {
+  const verifiedNodes = Array.isArray(route?.verifiedChain)
+    ? route.verifiedChain
+    : (route?.selectedNodes ?? []).map(({ node }) => node);
+  const articleNodes = verifiedNodes
+    .map((node) => ({
+      status_id: String(node?.id ?? 'unknown'),
+      signal_fields: selectedNodeArticleSignalFields(node)
+    }))
+    .filter(({ signal_fields }) => signal_fields.length > 0);
+  if (articleNodes.length) {
+    const error = new Error(`x_article_route_required:${articleNodes.map(({ status_id }) => status_id).join(',')}`);
+    error.code = 'x_article_route_required';
+    error.statusIds = articleNodes.map(({ status_id }) => status_id);
+    error.articleNodes = articleNodes;
+    error.requiredMaterializer = 'x_article';
+    throw error;
+  }
+  return { article_signal_count: 0 };
 }
 
 export function normalizeSourcePayload(payload, requestedId) {
@@ -881,13 +1097,33 @@ async function readSource(options, status) {
   }
 }
 
-function supportedImageSignature(buffer) {
-  if (buffer.length < 32) return false;
-  if (buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return true;
-  if (buffer.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) return true;
-  if (buffer.subarray(0, 6).toString('ascii') === 'GIF87a' || buffer.subarray(0, 6).toString('ascii') === 'GIF89a') return true;
-  if (buffer.subarray(0, 4).toString('ascii') === 'RIFF' && buffer.subarray(8, 12).toString('ascii') === 'WEBP') return true;
-  return buffer.subarray(4, 12).toString('ascii').startsWith('ftypavi');
+export function detectImageFormat(buffer) {
+  if (!Buffer.isBuffer(buffer) || buffer.length < 32) return null;
+  if (buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
+    return { extension: '.jpg', content_type: 'image/jpeg' };
+  }
+  if (buffer.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) {
+    return { extension: '.png', content_type: 'image/png' };
+  }
+  const gifSignature = buffer.subarray(0, 6).toString('ascii');
+  if (gifSignature === 'GIF87a' || gifSignature === 'GIF89a') {
+    return { extension: '.gif', content_type: 'image/gif' };
+  }
+  if (buffer.subarray(0, 4).toString('ascii') === 'RIFF' && buffer.subarray(8, 12).toString('ascii') === 'WEBP') {
+    return { extension: '.webp', content_type: 'image/webp' };
+  }
+  if (buffer.subarray(4, 8).toString('ascii') === 'ftyp') {
+    const declaredSize = buffer.readUInt32BE(0);
+    const boxEnd = declaredSize >= 16 ? Math.min(declaredSize, buffer.length) : Math.min(32, buffer.length);
+    const brands = [buffer.subarray(8, 12).toString('ascii')];
+    for (let offset = 16; offset + 4 <= boxEnd; offset += 4) {
+      brands.push(buffer.subarray(offset, offset + 4).toString('ascii'));
+    }
+    if (brands.some((brand) => brand === 'avif' || brand === 'avis')) {
+      return { extension: '.avif', content_type: 'image/avif' };
+    }
+  }
+  return null;
 }
 
 function supportedMp4Signature(buffer) {
@@ -906,9 +1142,26 @@ export async function materializeAsset(source, destination) {
     label: 'X 官方图片'
   });
   const buffer = response.buffer;
-  if (!supportedImageSignature(buffer)) throw new Error('素材签名不是受支持的位图格式');
+  const detected = detectImageFormat(buffer);
+  if (!detected) throw new Error('素材签名不是受支持的位图格式');
   fs.writeFileSync(destination, buffer, { flag: 'wx' });
-  return { bytes: buffer.length, sha256: sha256Buffer(buffer) };
+  return {
+    bytes: buffer.length,
+    sha256: sha256Buffer(buffer),
+    content_type: detected.content_type,
+    extension: detected.extension
+  };
+}
+
+export async function materializeSourceImage(source, outputDirectory, relativeStem) {
+  const provisionalRelativePath = `${relativeStem}.download`;
+  const provisionalPath = safeOutputPath(outputDirectory, provisionalRelativePath);
+  const integrity = await materializeAsset(source, provisionalPath);
+  const relativePath = `${relativeStem}${integrity.extension}`;
+  const destination = safeOutputPath(outputDirectory, relativePath);
+  if (fs.existsSync(destination)) throw new Error(`source-only 素材目标已存在：${relativePath}`);
+  fs.renameSync(provisionalPath, destination);
+  return { relative_path: relativePath, ...integrity };
 }
 
 export async function materializeVideoAsset(source, destination) {
@@ -941,12 +1194,16 @@ function normalizedAuthor(author) {
   };
 }
 
-async function prepareContent(route, outputDirectory, { includeNativeVideo = true } = {}) {
+async function prepareContent(route, outputDirectory, {
+  includeNativeVideo = true,
+  includeAvatar = true,
+  useDetectedMediaExtensions = false
+} = {}) {
   const assetsDirectory = safeOutputPath(outputDirectory, 'assets');
   fs.mkdirSync(assetsDirectory);
   const rootAuthor = normalizedAuthor(route.focal.author);
   let avatar = null;
-  if (rootAuthor.avatar_url) {
+  if (includeAvatar && rootAuthor.avatar_url) {
     const relativePath = 'assets/avatar.jpg';
     const destination = safeOutputPath(outputDirectory, relativePath);
     try {
@@ -986,15 +1243,25 @@ async function prepareContent(route, outputDirectory, { includeNativeVideo = tru
     }
     for (let mediaIndex = 0; mediaIndex < selected.media.length; mediaIndex += 1) {
       const media = selected.media[mediaIndex];
-      const relativePath = `assets/media-${nodeIndex + 1}-${mediaIndex + 1}${media.type === 'video' ? '-poster' : ''}.jpg`;
-      const destination = safeOutputPath(outputDirectory, relativePath);
-      const integrity = await materializeAsset(media.url, destination);
+      const relativeStem = `assets/media-${nodeIndex + 1}-${mediaIndex + 1}${media.type === 'video' ? '-poster' : ''}`;
+      let relativePath;
+      let integrity;
+      if (useDetectedMediaExtensions) {
+        const downloaded = await materializeSourceImage(media.url, outputDirectory, relativeStem);
+        relativePath = downloaded.relative_path;
+        integrity = downloaded;
+      } else {
+        relativePath = `${relativeStem}.jpg`;
+        const destination = safeOutputPath(outputDirectory, relativePath);
+        integrity = await materializeAsset(media.url, destination);
+      }
       const asset = {
         ...media,
         relative_path: relativePath,
         source_post_id: String(node.id),
         bytes: integrity.bytes,
         sha256: integrity.sha256,
+        ...(useDetectedMediaExtensions ? { content_type: integrity.content_type } : {}),
         source_scope: 'own_media'
       };
       if (media.type === 'video') asset.native_video_requested = includeNativeVideo;
@@ -1191,14 +1458,7 @@ function calculateCoverage(outputs, templates, route) {
     byTemplate[template.id] = perNode;
   }
   const outputMedia = outputs.filter((output) => output.kind === 'media').map((output) => output.media);
-  const ignoredQuoteMediaIds = new Set(route.audit.ignored_quote_media_ids ?? []);
-  const ignoredQuoteMediaUrlHashes = new Set(route.audit.ignored_quote_media_url_sha256 ?? []);
-  const quoteMediaCollisions = outputMedia.filter((media) => {
-    const urlHashes = [media.url, media.video_url]
-      .filter(Boolean)
-      .map((url) => sha256Buffer(Buffer.from(String(url))));
-    return ignoredQuoteMediaIds.has(String(media.id)) || urlHashes.some((urlHash) => ignoredQuoteMediaUrlHashes.has(urlHash));
-  });
+  const quoteMediaCollisions = quoteMediaCollisionAudit(outputMedia, route.audit);
   return {
     all_text_normalized_matches: allTextMatches,
     all_own_media_matches: allMediaMatches,
@@ -1592,7 +1852,7 @@ function serializableOutput(output) {
   return copy;
 }
 
-function manifestFor({ options, status, normalized, route, templates, outputs, assets, previewSheet, coverage, outputDirectory }) {
+export function manifestFor({ options, status, normalized, route, templates, outputs, assets, previewSheet, coverage, outputDirectory }) {
   const manifest = {
     version: 'yichen-x-slicer-manifest/v3',
     created_at: new Date().toISOString(),
@@ -1638,7 +1898,7 @@ function manifestFor({ options, status, normalized, route, templates, outputs, a
       outputs: []
     };
   }
-  return manifest;
+  return sanitizeRemoteUrlsForPersistence(manifest);
 }
 
 function assertPreRenderIntegrity(route, contentFrames, coverage) {
@@ -1656,14 +1916,14 @@ function assertPreRenderIntegrity(route, contentFrames, coverage) {
   if (problems.length) throw new Error(problems.join('；'));
 }
 
-function selectedSourceForDelivery(status, normalized, route) {
+export function selectedSourceForDelivery(status, normalized, route) {
   const focalMetrics = route.focal?.metrics ?? route.focal ?? {};
   const metricValue = (value) => {
     if (value == null || value === '') return null;
     const number = Number(value);
     return Number.isFinite(number) && number >= 0 ? number : null;
   };
-  return {
+  return sanitizeRemoteUrlsForPersistence({
     version: 'yichen-x-slicer-selected-source/v2',
     source: {
       url: status.canonicalUrl,
@@ -1704,24 +1964,434 @@ function selectedSourceForDelivery(status, normalized, route) {
       likes: metricValue(focalMetrics.likes),
       bookmarks: metricValue(focalMetrics.bookmarks)
     }
+  });
+}
+
+function sourceOnlyMediaBindings(route, assets) {
+  const downloaded = Array.isArray(assets?.media) ? assets.media : [];
+  let cursor = 0;
+  let globalOrder = 0;
+  const units = route.selectedNodes.map(({ node, cleanedText, media }, unitIndex) => {
+    const boundMedia = media.map((sourceMedia, mediaIndex) => {
+      const asset = downloaded[cursor];
+      cursor += 1;
+      globalOrder += 1;
+      if (!asset
+        || String(asset.source_post_id) !== String(node.id)
+        || String(asset.id) !== String(sourceMedia.id)
+        || asset.type !== sourceMedia.type) {
+        throw new Error(`source-only 媒体绑定错位：status ${String(node.id)} media ${String(sourceMedia.id)}`);
+      }
+      if (!asset.relative_path || !asset.sha256 || !asset.content_type) {
+        throw new Error(`source-only 媒体 ${String(sourceMedia.id)} 缺少本地路径、类型或哈希`);
+      }
+      if (asset.type === 'video') {
+        if (!asset.native_video?.relative_path || !asset.native_video?.sha256) {
+          throw new Error(`原生视频 ${String(sourceMedia.id)} 缺少已下载 MP4；拒绝只把海报当视频`);
+        }
+        return {
+          order: mediaIndex + 1,
+          global_order: globalOrder,
+          source_media_id: String(sourceMedia.id),
+          kind: 'video',
+          path: asset.native_video.relative_path,
+          sha256: asset.native_video.sha256,
+          bytes: asset.native_video.bytes,
+          content_type: asset.native_video.content_type,
+          poster: {
+            path: asset.relative_path,
+            sha256: asset.sha256,
+            bytes: asset.bytes,
+            content_type: asset.content_type
+          },
+          markdown_embed: `![原生视频封面](${asset.relative_path})`,
+          markdown_marker: `<!-- yichen-native-video: ${asset.native_video.relative_path} -->`
+        };
+      }
+      return {
+        order: mediaIndex + 1,
+        global_order: globalOrder,
+        source_media_id: String(sourceMedia.id),
+        kind: 'photo',
+        path: asset.relative_path,
+        sha256: asset.sha256,
+        bytes: asset.bytes,
+        content_type: asset.content_type,
+        poster: null,
+        markdown_embed: `![](${asset.relative_path})`,
+        markdown_marker: null
+      };
+    });
+    return {
+      order: unitIndex + 1,
+      marker: unitIndex === 0 ? null : `Thread${unitIndex + 1}:`,
+      status_id: String(node.id),
+      text: cleanedText,
+      media: boundMedia
+    };
+  });
+  if (cursor !== downloaded.length) {
+    throw new Error(`source-only 存在未绑定素材：expected ${cursor}, downloaded ${downloaded.length}`);
+  }
+  return units;
+}
+
+function yamlQuoted(value) {
+  return JSON.stringify(String(value));
+}
+
+function sourceFenceStateForLine(line, activeFence) {
+  const match = String(line).match(SOURCE_FENCE_CANDIDATE_RE);
+  if (activeFence) {
+    if (!match) return { activeFence, fenced: true };
+    const run = match[2];
+    const suffix = match[3];
+    const closes = run[0] === activeFence.character
+      && run.length >= activeFence.length
+      && /^\s*$/u.test(suffix);
+    return { activeFence: closes ? null : activeFence, fenced: true };
+  }
+  if (!match) return { activeFence: null, fenced: false };
+  const run = match[2];
+  const suffix = match[3];
+  if (run[0] === '`' && suffix.includes('`')) {
+    return { activeFence: null, fenced: false };
+  }
+  return {
+    activeFence: { character: run[0], length: run.length },
+    fenced: true
   };
 }
 
+export function encodeLiteralMarkerLines(text, { unitOrder, statusId }) {
+  const lines = String(text ?? '').split('\n');
+  const replacements = [];
+  let activeFence = null;
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    const fenceState = sourceFenceStateForLine(line, activeFence);
+    activeFence = fenceState.activeFence;
+    if (fenceState.fenced) continue;
+    if (LITERAL_MARKER_ENCODED_RE.test(line)) {
+      throw new Error(`literal_marker_reserved_syntax:${String(statusId)}:${index + 1}`);
+    }
+    if (!SOURCE_MARKER_LINE_RE.test(line)) continue;
+    const originalLineSha256 = sha256Buffer(Buffer.from(line));
+    const encodedLine = `${line}<!-- yichen-literal-marker:v1:${originalLineSha256} -->`;
+    replacements.push({
+      unit_order: unitOrder,
+      status_id: String(statusId),
+      line_order: index + 1,
+      source_markdown_line: null,
+      original_line: line,
+      original_line_sha256: originalLineSha256,
+      encoded_line: encodedLine
+    });
+    lines[index] = encodedLine;
+  }
+  return { text: lines.join('\n'), replacements };
+}
+
+function bindLiteralMarkerSourceLines(markdown, replacements) {
+  const sourceLines = markdown.split('\n');
+  let searchFrom = 0;
+  for (const replacement of replacements) {
+    const foundAt = sourceLines.findIndex((line, index) => index >= searchFrom && line === replacement.encoded_line);
+    if (foundAt < 0) {
+      throw new Error(`literal_marker_encoding_missing:${replacement.status_id}:${replacement.line_order}`);
+    }
+    replacement.source_markdown_line = foundAt + 1;
+    searchFrom = foundAt + 1;
+  }
+}
+
+export function sourceMarkdownForDelivery(status, route, assets) {
+  const units = sourceOnlyMediaBindings(route, assets);
+  const mode = units.length > 1 ? 'thread' : 'post';
+  const parts = [[
+    '---',
+    `mode: ${mode}`,
+    'preserve_text: true',
+    'source_kind: x',
+    `source_url: ${yamlQuoted(status.canonicalUrl)}`,
+    'title_policy: include',
+    'source_import: source-import.json',
+    '---'
+  ].join('\n')];
+  const replacements = [];
+  for (const unit of units) {
+    if (unit.marker) parts.push(unit.marker);
+    if (String(unit.text ?? '').trim()) {
+      const encoded = encodeLiteralMarkerLines(unit.text, {
+        unitOrder: unit.order,
+        statusId: unit.status_id
+      });
+      parts.push(encoded.text);
+      replacements.push(...encoded.replacements);
+    }
+    for (const media of unit.media) {
+      parts.push(media.markdown_embed);
+      if (media.markdown_marker) parts.push(media.markdown_marker);
+    }
+  }
+  const markdown = parts.join('\n\n') + '\n';
+  bindLiteralMarkerSourceLines(markdown, replacements);
+  return {
+    markdown,
+    units,
+    literalMarkerEncoding: {
+      version: LITERAL_MARKER_ENCODING_VERSION,
+      syntax: '<original><!-- yichen-literal-marker:v1:<sha256> -->',
+      replacements
+    }
+  };
+}
+
+export function sourceImportForDelivery({ status, normalized, route, assets, literalMarkerEncoding = null, sourceMarkdownSha256, selectedSourceSha256, routingAuditSha256 }) {
+  const units = sourceOnlyMediaBindings(route, assets);
+  const nativeVideos = units.flatMap((unit) => unit.media).filter((media) => media.kind === 'video');
+  const markerEncoding = literalMarkerEncoding ?? sourceMarkdownForDelivery(status, route, assets).literalMarkerEncoding;
+  assertNoQuoteMediaCollisions(
+    route.selectedNodes.flatMap((selected) => selected.media),
+    route.audit,
+    'source-import'
+  );
+  return {
+    version: 'yichen-x-slicer-source-import/v1',
+    created_at: new Date().toISOString(),
+    mode: 'source-only',
+    source: {
+      kind: 'x',
+      url: status.canonicalUrl,
+      post_id: status.id,
+      backend: normalized.backend,
+      retrieved_at: normalized.retrievedAt,
+      login_state_used: false
+    },
+    routed_input_type: route.resolvedInputType,
+    title_policy: 'include',
+    artificial_title_added: false,
+    files: {
+      markdown: { path: 'source.md', sha256: sourceMarkdownSha256 },
+      selected_source: { path: 'selected-source.json', sha256: selectedSourceSha256 },
+      routing_audit: { path: 'routing-audit.json', sha256: routingAuditSha256 },
+      assets_directory: 'assets'
+    },
+    thread_marker: {
+      first_unit_implicit: true,
+      subsequent_pattern: 'Thread{n}:',
+      marker_line_is_exclusive: true
+    },
+    media_policy: {
+      node_order_preserved: true,
+      within_node_order_preserved: true,
+      native_video_marker: '<!-- yichen-native-video: <relative-mp4-path> -->',
+      video_poster_is_preview_only: true,
+      native_video_upload_must_use_mp4_path: true
+    },
+    literal_marker_encoding: markerEncoding,
+    units,
+    checks: {
+      selected_unit_count: units.length,
+      bound_media_count: units.reduce((sum, unit) => sum + unit.media.length, 0),
+      native_video_count: nativeVideos.length,
+      all_native_videos_have_mp4: nativeVideos.every((media) => Boolean(media.path && media.sha256)),
+      hashes_match_current_files: null,
+      quote_media_collision_count: 0,
+      literal_marker_replacement_count: markerEncoding.replacements.length,
+      literal_marker_encoding_verified: null,
+      no_artificial_title: true
+    }
+  };
+}
+
+function outsideFenceLineRecords(text) {
+  const records = [];
+  const lines = String(text).split('\n');
+  let activeFence = null;
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    const fenceState = sourceFenceStateForLine(line, activeFence);
+    activeFence = fenceState.activeFence;
+    if (!fenceState.fenced) records.push({ line, line_number: index + 1 });
+  }
+  return records;
+}
+
+export function assertLiteralMarkerEncodingIntegrity(sourceMarkdown, sourceImport) {
+  const encoding = sourceImport.literal_marker_encoding;
+  if (!encoding
+    || encoding.version !== LITERAL_MARKER_ENCODING_VERSION
+    || !Array.isArray(encoding.replacements)) {
+    throw new Error('literal_marker_encoding_invalid');
+  }
+  if (sourceImport.checks.literal_marker_replacement_count !== encoding.replacements.length) {
+    throw new Error('literal_marker_encoding_count_mismatch');
+  }
+  const sourceLines = String(sourceMarkdown).split('\n');
+  const encodedSourceLines = outsideFenceLineRecords(sourceMarkdown)
+    .filter(({ line }) => LITERAL_MARKER_ENCODED_RE.test(line));
+  if (encodedSourceLines.length !== encoding.replacements.length) {
+    throw new Error(`literal_marker_encoding_unbound_line:${encodedSourceLines.length}:${encoding.replacements.length}`);
+  }
+  const usedSourceLines = new Set();
+  for (const replacement of encoding.replacements) {
+    const unit = sourceImport.units[Number(replacement.unit_order) - 1];
+    const originalLine = String(replacement.original_line ?? '');
+    const expectedHash = sha256Buffer(Buffer.from(originalLine));
+    const expectedEncodedLine = `${originalLine}<!-- yichen-literal-marker:v1:${expectedHash} -->`;
+    if (!unit
+      || String(unit.status_id) !== String(replacement.status_id)
+      || String(unit.text ?? '').split('\n')[Number(replacement.line_order) - 1] !== originalLine
+      || replacement.original_line_sha256 !== expectedHash
+      || replacement.encoded_line !== expectedEncodedLine
+      || !SOURCE_MARKER_LINE_RE.test(originalLine)
+      || SOURCE_MARKER_LINE_RE.test(expectedEncodedLine)) {
+      throw new Error(`literal_marker_encoding_binding_mismatch:${String(replacement.status_id)}:${String(replacement.line_order)}`);
+    }
+    const sourceLine = Number(replacement.source_markdown_line);
+    if (!Number.isSafeInteger(sourceLine)
+      || sourceLine < 1
+      || usedSourceLines.has(sourceLine)
+      || sourceLines[sourceLine - 1] !== expectedEncodedLine) {
+      throw new Error(`literal_marker_encoding_source_line_mismatch:${String(replacement.status_id)}:${String(replacement.line_order)}`);
+    }
+    usedSourceLines.add(sourceLine);
+  }
+  sourceImport.checks.literal_marker_encoding_verified = true;
+}
+
+function assertSourceOnlyFileIntegrity(outputDirectory, sourceImport) {
+  const hashedFiles = [
+    sourceImport.files.markdown,
+    sourceImport.files.selected_source,
+    sourceImport.files.routing_audit
+  ];
+  for (const record of hashedFiles) {
+    const file = safeOutputPath(outputDirectory, record.path);
+    if (!fs.statSync(file).isFile() || sha256File(file) !== record.sha256) {
+      throw new Error(`source-only 文件哈希不一致：${record.path}`);
+    }
+  }
+  const sourceMarkdown = fs.readFileSync(safeOutputPath(outputDirectory, sourceImport.files.markdown.path), 'utf8');
+  assertLiteralMarkerEncodingIntegrity(sourceMarkdown, sourceImport);
+  for (const unit of sourceImport.units) {
+    for (const media of unit.media) {
+      const mediaPath = safeOutputPath(outputDirectory, media.path);
+      if (!fs.statSync(mediaPath).isFile() || sha256File(mediaPath) !== media.sha256) {
+        throw new Error(`source-only 素材哈希不一致：${media.path}`);
+      }
+      const mediaBuffer = fs.readFileSync(mediaPath);
+      if (media.kind === 'video') {
+        if (!supportedMp4Signature(mediaBuffer)) {
+          throw new Error(`source-only 原生视频不是有效 MP4：${media.path}`);
+        }
+      } else {
+        const detected = detectImageFormat(mediaBuffer);
+        if (!detected
+          || detected.extension !== path.extname(media.path).toLowerCase()
+          || detected.content_type !== media.content_type) {
+          throw new Error(`source-only 图片扩展名或类型与魔数不一致：${media.path}`);
+        }
+      }
+      if (media.poster) {
+        const posterPath = safeOutputPath(outputDirectory, media.poster.path);
+        if (!fs.statSync(posterPath).isFile() || sha256File(posterPath) !== media.poster.sha256) {
+          throw new Error(`source-only 视频海报哈希不一致：${media.poster.path}`);
+        }
+        const detectedPoster = detectImageFormat(fs.readFileSync(posterPath));
+        if (!detectedPoster
+          || detectedPoster.extension !== path.extname(media.poster.path).toLowerCase()
+          || detectedPoster.content_type !== media.poster.content_type) {
+          throw new Error(`source-only 视频海报扩展名或类型与魔数不一致：${media.poster.path}`);
+        }
+      }
+    }
+  }
+  sourceImport.checks.hashes_match_current_files = true;
+}
+
+async function runSourceOnly({ status, normalized, route, outputDirectory }) {
+  assertNoQuoteMediaCollisions(
+    route.selectedNodes.flatMap((selected) => selected.media),
+    route.audit,
+    'source-only-pre-download'
+  );
+  const prepared = await prepareContent(route, outputDirectory, {
+    includeNativeVideo: true,
+    includeAvatar: false,
+    useDetectedMediaExtensions: true
+  });
+  assertNoQuoteMediaCollisions(
+    prepared.assets.media,
+    route.audit,
+    'source-only-post-download'
+  );
+  const source = sourceMarkdownForDelivery(status, route, prepared.assets);
+  const sourceMarkdownPath = safeOutputPath(outputDirectory, 'source.md');
+  fs.writeFileSync(sourceMarkdownPath, source.markdown, { encoding: 'utf8', flag: 'wx' });
+  const selectedSourcePath = safeOutputPath(outputDirectory, 'selected-source.json');
+  const routingAuditPath = safeOutputPath(outputDirectory, 'routing-audit.json');
+  const sourceImport = sourceImportForDelivery({
+    status,
+    normalized,
+    route,
+    assets: prepared.assets,
+    literalMarkerEncoding: source.literalMarkerEncoding,
+    sourceMarkdownSha256: sha256File(sourceMarkdownPath),
+    selectedSourceSha256: sha256File(selectedSourcePath),
+    routingAuditSha256: sha256File(routingAuditPath)
+  });
+  assertSourceOnlyFileIntegrity(outputDirectory, sourceImport);
+  const sourceImportPath = safeOutputPath(outputDirectory, 'source-import.json');
+  fs.writeFileSync(sourceImportPath, JSON.stringify(sourceImport, null, 2) + '\n', { encoding: 'utf8', flag: 'wx' });
+  const allMedia = source.units.flatMap((unit) => unit.media);
+  const result = {
+    status: 'success',
+    mode: 'source-only',
+    output_directory: outputDirectory,
+    routed_input_type: route.resolvedInputType,
+    source_markdown: sourceMarkdownPath,
+    selected_source: selectedSourcePath,
+    routing_audit: routingAuditPath,
+    source_import: sourceImportPath,
+    unit_count: source.units.length,
+    media_count: allMedia.length,
+    asset_count: allMedia.reduce((sum, media) => sum + (media.kind === 'video' ? 2 : 1), 0),
+    photo_count: allMedia.filter((media) => media.kind === 'photo').length,
+    native_video_count: allMedia.filter((media) => media.kind === 'video').length,
+    quote_only_exclusions: route.audit.excluded_statuses.filter((statusItem) => statusItem.reason === 'quote_only')
+  };
+  process.stdout.write(JSON.stringify(result, null, 2) + '\n');
+  return result;
+}
+
 export async function run(options) {
-  options = { ...options, video: options.video !== false };
+  options = { ...options, sourceOnly: options.sourceOnly === true, video: options.video !== false };
   const status = parseStatusUrl(options.url);
   const source = await readSource(options, status);
   const normalized = normalizeSourcePayload(source.payload, status.id);
   const route = routeThread(normalized, source.endpoint);
+  if (options.sourceOnly) assertNoSelectedArticleSignals(route);
   if (!route.selectedNodes.length) throw new Error('去除引用内容后没有可生成的正文或自身媒体');
-  const templates = options.template === 'all' ? [...TEMPLATES] : [TEMPLATE_BY_ID.get(options.template)];
   const requestedOutput = options.output
     ? path.resolve(options.output)
-    : path.resolve(process.cwd(), 'outputs', `x-post-${status.id}-${options.template}`);
+    : path.resolve(process.cwd(), 'outputs', options.sourceOnly
+      ? `x-source-${status.id}`
+      : `x-post-${status.id}-${options.template}`);
   const outputDirectory = reserveOutputDirectory(requestedOutput);
   fs.writeFileSync(safeOutputPath(outputDirectory, 'selected-source.json'), JSON.stringify(selectedSourceForDelivery(status, normalized, route), null, 2) + '\n', { encoding: 'utf8', flag: 'wx' });
-  fs.writeFileSync(safeOutputPath(outputDirectory, 'routing-audit.json'), JSON.stringify(route.audit, null, 2) + '\n', { encoding: 'utf8', flag: 'wx' });
+  fs.writeFileSync(safeOutputPath(outputDirectory, 'routing-audit.json'), JSON.stringify(sanitizeRemoteUrlsForPersistence(route.audit), null, 2) + '\n', { encoding: 'utf8', flag: 'wx' });
 
+  if (options.sourceOnly) {
+    try {
+      return await runSourceOnly({ status, normalized, route, outputDirectory });
+    } catch (error) {
+      throw new Error(`${error.message}\n诊断目录：${outputDirectory}`);
+    }
+  }
+
+  const templates = options.template === 'all' ? [...TEMPLATES] : [TEMPLATE_BY_ID.get(options.template)];
   const prepared = await prepareContent(route, outputDirectory, { includeNativeVideo: options.video });
   const outputs = makeOutputs(prepared.contentFrames, templates, outputDirectory);
   const previewSheet = makePreviewFiles(outputs, templates, outputDirectory);
@@ -1811,7 +2481,18 @@ async function main() {
   await run(options);
 }
 
-const isDirectRun = process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href;
+export function isDirectExecution(argvPath, moduleUrl = import.meta.url) {
+  if (!argvPath) return false;
+  try {
+    const argvRealPath = fs.realpathSync(path.resolve(argvPath));
+    const moduleRealPath = fs.realpathSync(fileURLToPath(moduleUrl));
+    return argvRealPath === moduleRealPath;
+  } catch {
+    return moduleUrl === pathToFileURL(path.resolve(argvPath)).href;
+  }
+}
+
+const isDirectRun = isDirectExecution(process.argv[1]);
 if (isDirectRun) {
   main().catch((error) => {
     process.stderr.write(`错误：${error.message}\n`);

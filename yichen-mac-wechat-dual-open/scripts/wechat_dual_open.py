@@ -152,10 +152,9 @@ def set_language(bundle: str, languages: list[str]) -> None:
 
 
 def launch(app: Path) -> None:
-    exe = app / "Contents" / "MacOS" / "WeChat"
-    if not exe.exists():
-        raise SystemExit(f"WeChat executable not found: {exe}")
-    subprocess.Popen([str(exe)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    raise RuntimeError(
+        f"launch is disabled: the user must open {app} manually; no WeChat process was started"
+    )
 
 
 def status(source: Path, target: Path) -> None:
@@ -364,8 +363,11 @@ def main() -> int:
         register_and_refresh(target)
         print(f"refreshed icon/app caches for: {target}")
     elif args.command == "launch":
-        launch(target)
-        print(f"launched: {target}")
+        try:
+            launch(target)
+        except RuntimeError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
     return 0
 
 

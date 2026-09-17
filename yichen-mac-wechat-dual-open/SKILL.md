@@ -1,131 +1,96 @@
 ---
 name: yichen-mac-wechat-dual-open
-description: |
-  Create, inspect, repair, and polish a second WeChat app on macOS.
-  Copy WeChat, change the bundle identifier, ad-hoc re-sign, launch the second
-  instance, set Chinese language preferences, and recolor only the copied app
-  icon from WeChat green to blue. Use when the user asks whether Mac WeChat
-  dual-open methods are reliable, asks to double-open WeChat, fix WeChat-2
-  language/icon/cache issues, or make the second WeChat visually distinct
-  without installing third-party injection tools.
+description: Create, inspect, repair, and polish a second WeChat app on macOS by copying WeChat, changing the bundle identifier, ad-hoc re-signing, preparing it for the user to open manually, setting Chinese language preferences, and recoloring only the copied app icon from WeChat green to blue. Use when the user asks whether Mac WeChat dual-open methods from X/Twitter or scripts are reliable, asks to prepare a second WeChat app, fix WeChat-2 language/icon/cache issues, or make the copied app visually distinct without installing third-party injection tools. Never launch or control WeChat.
 ---
 
 # Mac WeChat Dual Open
 
-Create a second WeChat instance on macOS for running two accounts simultaneously.
+## Core Judgment
 
-## Core Method
+Prefer the copy + bundle id + ad-hoc signing method over injection/tweak tools when the user wants a cleaner second WeChat:
 
-The underlying mechanism is simple — macOS distinguishes apps by their bundle
-identifier. By copying WeChat, changing the copy's bundle ID, and re-signing
-it locally, macOS treats the copy as a separate app that can run alongside the
-original:
-
-1. Copy `/Applications/WeChat.app` to `~/Applications/WeChat-2.app`.
-2. Change the copy's `CFBundleIdentifier` (e.g., to `com.tencent.xin2`).
+1. Copy `/Applications/WeChat.app` to a user-owned app such as `~/Applications/WeChat-2.app`.
+2. Change only the copy's `CFBundleIdentifier`, usually to `com.tencent.xin2`.
 3. Re-sign the copy with `codesign --force --deep --sign -`.
-4. Launch the copy via its executable directly.
+4. Stop and have the user open the prepared copy manually. The agent never launches WeChat.
 
-No third-party injection tools or modified binaries required.
+This is generally workable, but not permanent. Updates, push notifications, keychain isolation, Gatekeeper/signing policy, and Tencent-side app checks can break or degrade it. Read `references/reliability-and-risks.md` when evaluating a public tutorial or explaining tradeoffs.
 
 ## Prerequisites
 
 - macOS 12+ with WeChat installed at `/Applications/WeChat.app`
 - Python 3.10+ (system python works)
-- Pillow (`pip3 install Pillow`) — required only for `recolor-icon`
-- Xcode Command Line Tools (`xcode-select --install`) for `codesign`, `iconutil`, `sips`
+- Pillow: required for `recolor-icon`. Install with `pip3 install Pillow` if missing.
+- Xcode Command Line Tools: `xcode-select --install` provides `codesign`, `iconutil`, `sips`.
 
 ## Locating the Script
 
-The helper script lives at `scripts/wechat_dual_open.py` relative to this skill
-directory. Different agents install skills to different paths. Construct the
-script path dynamically:
+This skill contains a helper script at `scripts/wechat_dual_open.py` relative to the skill directory. Different agents install skills to different paths:
+
+- Claude Code: `~/.claude/skills/yichen-mac-wechat-dual-open/scripts/wechat_dual_open.py`
+- Codex CLI: `~/.codex/skills/yichen-mac-wechat-dual-open/scripts/wechat_dual_open.py`
+- Others: locate the skill directory by finding `SKILL.md` for `yichen-mac-wechat-dual-open`
+
+When executing commands, construct the script path dynamically:
 
 ```bash
-# Auto-detect skill directory
+# Auto-detect: find the script regardless of agent platform
 SKILL_DIR="$(dirname "$(find ~ -path '*/yichen-mac-wechat-dual-open/SKILL.md' -maxdepth 4 2>/dev/null | head -1)")"
 SCRIPT="$SKILL_DIR/scripts/wechat_dual_open.py"
+python3 "$SCRIPT" status
+```
+
+Or if you know your skill path, use it directly:
+
+```bash
+SCRIPT="<skill-dir>/scripts/wechat_dual_open.py"
+python3 "$SCRIPT" status
 ```
 
 ## Quick Commands
 
 ```bash
-python3 "$SCRIPT" status          # Check current state
-python3 "$SCRIPT" create          # Create the second WeChat
-python3 "$SCRIPT" set-language --languages zh-Hans en   # Set Chinese
-python3 "$SCRIPT" recolor-icon --blue "#1296db"         # Blue icon
-python3 "$SCRIPT" launch          # Start the second instance
-python3 "$SCRIPT" repair          # Fix bundle id, signing, language, caches
+python3 "$SCRIPT" status
+python3 "$SCRIPT" create
+python3 "$SCRIPT" set-language --languages zh-Hans en
+python3 "$SCRIPT" recolor-icon --blue "#1296db"
+# The user opens ~/Applications/WeChat-2.app manually; the agent never runs launch.
 ```
 
-Default paths (override with `--source-app`, `--target-app`, `--bundle-id`):
+Default paths:
 
-- Source: `/Applications/WeChat.app`
-- Target: `~/Applications/WeChat-2.app`
-- Bundle ID: `com.tencent.xin2`
+- Source app: `/Applications/WeChat.app`
+- Second app: `~/Applications/WeChat-2.app`
+- Second bundle id: `com.tencent.xin2`
+
+Pass `--source-app`, `--target-app`, or `--bundle-id` when the user's setup differs.
 
 ## Workflow
 
-1. **Status first.** Run `status` to see what already exists.
-2. **Create.** If no second app exists, run `create`. This copies the app,
-   changes the bundle ID, sets Chinese language, removes `CFBundleIconName`,
-   re-signs, and registers with Launch Services.
-3. **Language.** If the second instance opens in English, run `set-language`,
-   then restart it.
-4. **Icon.** Run `recolor-icon` to change the WeChat green to a user-chosen
-   blue. The script handles both the outer `AppIcon.icns` and the embedded
-   `WeChatAppEx.app/.../app.icns`, removes `CFBundleIconName` to avoid stale
-   `Assets.car` entries, and sets a Finder custom icon when the Carbon-era
-   tools (`DeRez`, `Rez`, `SetFile`) are available.
-5. **Launch.** Run `launch`. The second WeChat should appear with its own login
-   window. Pin it to the Dock separately from the original.
-
-## Reliability & Tradeoffs
-
-This is **not** an official method. Rate it roughly 6.5–7 / 10 for reliability:
-
-- Works on many macOS + WeChat version combinations.
-- No code injection or third-party tweaks — easy to inspect and undo.
-- **Breaks after WeChat updates.** Re-run `create` (or `repair`) after
-  updating the original WeChat.
-- Push notifications may be unreliable (APNs tied to original identity).
-- Login state and Keychain are isolated per bundle ID.
-- Ad-hoc signing may fail if WeChat adds stricter signature checks.
-
-See `references/reliability-and-risks.md` for the full analysis.
+1. Run `status` first. Confirm the source version, target path, bundle ids, active processes, and whether an existing `WeChat-2.app` is already present.
+2. If no second app exists, run `create`. If it exists, avoid deleting it. Use `repair` to re-apply bundle id, language preference, signing, registration, and cache refresh.
+3. If the second instance appears in English, run `set-language --languages zh-Hans en`, then restart the second WeChat.
+4. If the user wants a blue icon, run `recolor-icon`. This extracts the original WeChat icon, changes green pixels to blue in HSV/HLS space, preserves white chat bubbles and shape, replaces both outer and embedded icon files, removes `CFBundleIconName` to avoid stale `Assets.car` green icons, clears Finder custom-icon detritus before signing, re-signs, adds a Finder custom icon back, and refreshes caches. If the Finder custom icon tools (`DeRez`, `Rez`, `SetFile`) are unavailable on newer macOS, the script skips that step gracefully — icns replacement alone is usually sufficient.
+5. Stop before launch. Tell the user to open `~/Applications/WeChat-2.app` manually. If Dock still shows the old icon, the user may quit and reopen it; the agent must not control either WeChat app.
 
 ## Icon Pitfalls
 
-WeChat stores icons in multiple locations. The script handles all of them:
+Do not stop after replacing only `Contents/Resources/AppIcon.icns`. WeChat also has:
 
-| Location | What it affects |
-|----------|----------------|
-| `Contents/Resources/AppIcon.icns` | Main app icon |
-| `Contents/MacOS/WeChatAppEx.app/Contents/Resources/app.icns` | Embedded runtime icon |
-| `Contents/Resources/Assets.car` | Asset catalog (handled via `CFBundleIconName` removal) |
-| `Icon\r` + Finder custom icon attr | Finder "Applications" view |
+- `Contents/MacOS/WeChatAppEx.app/Contents/Resources/app.icns`
+- `Contents/Resources/Assets.car` with `AppIcon` renditions
+- Finder/Dock/LaunchServices icon caches
 
-If the user reports the icon is still green:
-- They may be looking at `/Applications/WeChat.app` (the original), not
-  `~/Applications/WeChat-2.app`. Verify with `open -R ~/Applications/WeChat-2.app`.
-- Dock caches per-process icons. Quit and relaunch WeChat-2.
-- The Finder custom icon step requires `DeRez`/`Rez`/`SetFile` which may not
-  exist on macOS 13+. The script skips gracefully — icns replacement is usually
-  sufficient.
+For reliable Finder "Applications" display, the script also writes a Finder custom icon to `WeChat-2.app/Icon\r` and sets the Custom Icon attribute. If the user says "Finder still shows green," inspect the real selected path with Finder or `open -R ~/Applications/WeChat-2.app`; they may be looking at `/Applications/WeChat.app` or a cached Dock/Launchpad tile.
+
+Important ordering: `codesign` must run before adding the Finder custom icon, or after clearing it. Otherwise macOS can reject the bundle with `resource fork, Finder information, or similar detritus not allowed`.
 
 ## Safety
 
-- **Never modify `/Applications/WeChat.app`** — all changes are scoped to the copy.
-- Ask before deleting an existing second app. Prefer `repair` over delete/recreate.
-- The `codesign` step must run **before** adding a Finder custom icon, otherwise
-  macOS rejects the bundle with "resource fork, Finder information, or similar
-  detritus not allowed".
+Do not modify `/Applications/WeChat.app` unless the user explicitly asks. Keep all changes scoped to the second app.
 
-## References & Attribution
+Before deleting/replacing an existing second app, ask for action-time confirmation because deleting local files is risky. Prefer repair-in-place.
 
-- Original tutorial by [@koffuxu](https://x.com/koffuxu/status/2043110831584690427)
-  (2026-04, blog post: "Mac 微信双开最完美方案")
-- Confirmed by [@MinLiBuilds](https://x.com/MinLiBuilds/status/2043121624971678083)
-  (2026-04)
-- Icon recoloring uses HSV/HLS hue rotation via Pillow.
-- Finder custom icon technique uses classic Carbon resource tools (`DeRez`/`Rez`).
+Do not run pasted one-line shell scripts from social media. Recreate the simple operations locally or use the bundled script so the exact changes are inspectable.
+
+Never launch, open, quit, click, or otherwise control either WeChat app. The bundled `launch` command is disabled; opening the prepared copy is always a user-only step.

@@ -1,6 +1,6 @@
 ---
 name: yichen-x-slicer
-description: Convert a public X/Twitter Post, Quote Post, or Thread URL into a verified sequence of 1080×1440 Chinese image slices and a finished MP4 using one of 11 bundled visual templates. Native videos attached to selected posts play in full inside their media frame instead of becoming frozen thumbnails and retain their own source audio on the matching page timeline when present; source-silent pages remain silent, and the final MP4 has no audio stream when no selected native video has one. Use when the user asks to use Yichen X Slicer（逸尘 X 切片）to turn an X link into image cards, tweet slices, a finished social video, 3:4 post graphics, or the 落日琥珀版/default style. Ignore quoted content, retain only the selected Post or same-author Thread body and its own media, and never create TTS, voice-over, BGM, music, Jianying drafts, or publish content.
+description: "将公开 X 推文、Quote 或同作者 Thread 转为 1080×1440 图片切片和 MP4；也支持显式 source-only 素材桥接。保留所选原生视频及对应音频，不发布。"
 ---
 
 # Yichen X Slicer（逸尘 X 切片）
@@ -43,6 +43,17 @@ Generate images without a video only when the user explicitly asks for images on
 
 The normal workflow appends one verified MP4 per selected template after PNG and ZIP verification. With `--template all`, generate 11 separate videos; never mix templates into one timeline. `--images-only` is an explicit opt-out. Read [video.md](references/video.md) for the fixed timing, source-audio, and verification contract.
 
+When another workflow needs a faithful local Markdown source rather than visual slices, use the isolated source bridge:
+
+```bash
+"<node-bin>" "$SKILL_DIR/scripts/yichen_x_slicer.mjs" \
+  --url "<x-status-url>" \
+  --source-only \
+  --output "<absolute-output-directory>"
+```
+
+`--source-only` reuses the same verified routing and downloader but does not render. Read [source-only.md](references/source-only.md) before invoking or consuming this mode; it defines the five-output contract, Thread markers, media ordering, and mandatory native-MP4 binding.
+
 ## Content contract
 
 - Keep the author header's right-side label visually blank on every frame.
@@ -67,7 +78,9 @@ Read [content-routing.md](references/content-routing.md) when diagnosing routing
 
 ## Verify and deliver
 
-Require all of the following before reporting completion:
+For `--source-only`, use the separate verification and delivery checklist in [source-only.md](references/source-only.md), not the visual-render checklist below.
+
+For the normal rendering mode, require all of the following before reporting completion:
 
 1. `qa-report.json` has zero failures.
 2. `manifest.json` records the requested template and `sunset` when no template was passed.
@@ -92,6 +105,7 @@ Return links to `index.html`, `contact-sheet.png`, the final ZIP, and every veri
 - Read only public X data anonymously through FxTwitter; do not use X login state or cookies.
 - Accept runtime media only from HTTPS `pbs.twimg.com` or `video.twimg.com`, including every redirect hop. Native MP4 downloads must remain on exact host `video.twimg.com`. Reject local paths, `file:`/`data:` URLs, oversized responses, wrong MIME types, non-image signatures, and non-MP4 video signatures.
 - Fail closed when a Thread node has an invalid numeric status ID, the focal author identity is missing, or a Quote `t.co` URL cannot be resolved from top-level URL entities.
+- In `--source-only`, fail with `x_article_route_required` when any top-level node in the verified same-author chain signals an X Article, including a pure Article card excluded from ordinary text/media selection; this bridge must not turn an Article teaser into the source body.
 - Do not operate WeChat, Jianying, or any publishing UI.
 - Do not generate or add TTS, voice-over, BGM, or music. The only permitted audio is the original audio carried by a selected non-Quote native video, placed on that video's matching page timeline; do not synthesize an empty audio stream when none of the selected videos has audio.
 - Generate the fixed-timing video by default. Suppress it only through an explicit `--images-only` request; do not add other video pacing modes or free-form FFmpeg filters.

@@ -139,7 +139,7 @@ Run a bounded Codex × ChatGPT Review Loop:
 - Pure research never starts or attaches the code Tunnel
 - The public package contains no Runtime Key, Tunnel/App ID, private runtime, browser session, screenshot, or personal absolute path
 
-This is the unified research + architecture + review entry. The older `yichen-chatgpt-web-research` directory remains available as a legacy research-only workflow. See [codex-chatgpt/README.md](./codex-chatgpt/README.md) for installation and the external runtime contract.
+This is the unified research + architecture + review entry. The older `yichen-chatgpt-web-research` directory remains available as a legacy research-only workflow. See [codex-chatgpt/README.md](./yichen-codex-chatgpt/README.md) for installation and the external runtime contract.
 
 ### `yichen-agent-memory`
 Install and maintain the public Agent Memory Vault system:
@@ -497,7 +497,7 @@ codex plugin add yichen-grok-consult@yichen-skills
 
 1. Install it with `npx skills add mcncarl/yichen-skills --skill codex-chatgpt`
 2. For pure research, verify that the official ChatGPT website exposes Chat mode and a visible `Pro` route
-3. For code, hybrid, or review, configure the private App and compatible read-only runtime described in [codex-chatgpt/references/setup.md](./codex-chatgpt/references/setup.md)
+3. For code, hybrid, or review, configure the private App and compatible read-only runtime described in [codex-chatgpt/references/setup.md](./yichen-codex-chatgpt/references/setup.md)
 4. Keep the populated local configuration and all evidence outside source repositories
 
 ### G) Enable `yichen-agent-memory`
@@ -695,3 +695,7 @@ See `THIRD_PARTY_NOTICES.md` for details.
 ## License
 
 Personal Learning and Non-Commercial Use License. See [LICENSE](./LICENSE).
+
+## Skill version maintenance
+
+See [源码与安装版维护](docs/skill-maintenance.md) for read-only drift checks, scoped updates, and separate public/private runtime release boundaries.

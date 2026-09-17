@@ -139,7 +139,7 @@ Mac 微信双开——无需第三方工具，一条命令搞定：
 - 纯调研不会启动或挂载代码 Tunnel
 - 公开包不含 Runtime Key、Tunnel/App ID、私有 Runtime、浏览器会话、截图或个人绝对路径
 
-这是新的统一调研 + 架构 + 审查入口。旧的 `yichen-chatgpt-web-research` 仍作为历史兼容调研入口保留。安装和外部 Runtime 契约见 [codex-chatgpt/README.md](./codex-chatgpt/README.md)。
+这是新的统一调研 + 架构 + 审查入口。旧的 `yichen-chatgpt-web-research` 仍作为历史兼容调研入口保留。安装和外部 Runtime 契约见 [codex-chatgpt/README.md](./yichen-codex-chatgpt/README.md)。
 
 ### `yichen-agent-memory`
 安装和维护公开版 Agent Memory Vault 系统：
@@ -497,7 +497,7 @@ codex plugin add yichen-grok-consult@yichen-skills
 
 1. 运行 `npx skills add mcncarl/yichen-skills --skill codex-chatgpt` 安装
 2. 纯调研需要 ChatGPT 官网中可见的 Chat/聊天与 `Pro` 路线
-3. 代码、混合或审查模式需要按 [codex-chatgpt/references/setup.md](./codex-chatgpt/references/setup.md) 配置私有 App 和兼容只读 Runtime
+3. 代码、混合或审查模式需要按 [codex-chatgpt/references/setup.md](./yichen-codex-chatgpt/references/setup.md) 配置私有 App 和兼容只读 Runtime
 4. 已填写的本地配置和全部证据必须保存在源代码仓库之外
 
 ### G）启用 `yichen-agent-memory`
@@ -693,3 +693,7 @@ python3 ~/.agents/skills/x-article-draft-uploader/scripts/export_x_cookies_from_
 ## License
 
 Personal Learning and Non-Commercial Use License。见 [LICENSE](./LICENSE)。
+
+## Skill 版本维护
+
+参见[源码与安装版维护](docs/skill-maintenance.md)：只读差异检查、按范围同步，以及公开与私有运行时的独立发布边界。

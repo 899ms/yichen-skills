@@ -5,21 +5,36 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   DEFAULT_TEMPLATE,
   TEMPLATES,
+  assertLiteralMarkerEncodingIntegrity,
+  assertNoQuoteMediaCollisions,
+  assertNoSelectedArticleSignals,
   deriveHook,
+  detectImageFormat,
+  encodeLiteralMarkerLines,
   formatMetric,
+  isDirectExecution,
+  manifestFor,
   materializeAsset,
+  materializeSourceImage,
   materializeVideoAsset,
   normalizeSourcePayload,
   normalizeText,
   ownMedia,
   parseArgs,
   parseStatusUrl,
+  quoteMediaCollisionAudit,
   removeQuoteStatusUrl,
   routeThread,
+  run,
+  sanitizeRemoteUrlsForPersistence,
   selectNativeVideoVariant,
+  selectedSourceForDelivery,
+  sourceImportForDelivery,
+  sourceMarkdownForDelivery,
   splitText
 } from './yichen_x_slicer.mjs';
 import {
@@ -205,6 +220,25 @@ test('默认模板为落日琥珀版', () => {
   const parsed = parseArgs(['--url', 'https://x.com/writer/status/100', '--output', '/tmp/example']);
   assert.equal(parsed.template, 'sunset');
   assert.equal(parsed.video, true);
+  assert.equal(parsed.sourceOnly, false);
+});
+
+test('source-only 是隔离的轻量来源模式', () => {
+  const parsed = parseArgs([
+    '--url', 'https://x.com/writer/status/100',
+    '--source-only',
+    '--output', '/tmp/example-source'
+  ]);
+  assert.equal(parsed.sourceOnly, true);
+  assert.equal(parsed.video, true);
+  assert.throws(
+    () => parseArgs(['--url', 'https://x.com/writer/status/100', '--source-only', '--images-only']),
+    /不能与 --video 或 --images-only 同时使用/u
+  );
+  assert.throws(
+    () => parseArgs(['--url', 'https://x.com/writer/status/100', '--source-only', '--video']),
+    /不能与 --video 或 --images-only 同时使用/u
+  );
 });
 
 test('默认追加成片，只有显式 --images-only 才关闭', () => {
@@ -756,6 +790,31 @@ test('Thread 从中间链接向前找根并加载同作者连续链', () => {
   assert.equal(route.audit.thread_root_status_id, '100');
 });
 
+test('Thread 同秒节点按数字 status ID 判定先后并保留连续链', () => {
+  const sameSecond = '2026-08-05T00:00:00Z';
+  const root = post(200, '同秒第一段。', { createdAt: sameSecond });
+  const middle = post(201, '同秒第二段。', {
+    replyTo: 200,
+    createdAt: sameSecond
+  });
+  const end = post(202, '同秒第三段。', {
+    replyTo: 201,
+    createdAt: sameSecond
+  });
+  const route = routeThread(normalizeFixture(middle, [root, middle, end]));
+  assert.equal(route.resolvedInputType, 'thread');
+  assert.deepEqual(route.audit.verified_chain_status_ids, ['200', '201', '202']);
+  assert.deepEqual(ids(route), ['200', '201', '202']);
+
+  const lowerIdChild = post(199, '同秒但 ID 更小。', {
+    replyTo: 200,
+    createdAt: sameSecond
+  });
+  const rejected = routeThread(normalizeFixture(root, [root, lowerIdChild]));
+  assert.deepEqual(ids(rejected), ['200']);
+  assert.deepEqual(rejected.audit.excluded_not_later_ids, ['199']);
+});
+
 test('带 Quote 的 Thread 忽略 Quote 正文和 Quote 媒体但保留自身媒体', () => {
   const root = post(100, '第一段。', { createdAt: '2026-08-05T00:00:00Z' });
   const child = post(101, '第二段自己的文字。\nhttps://twitter.com/quoted/status/900', {
@@ -772,6 +831,78 @@ test('带 Quote 的 Thread 忽略 Quote 正文和 Quote 媒体但保留自身媒
   assert(!JSON.stringify(route.selectedNodes.map(({ cleanedText, media }) => ({ cleanedText, media }))).includes('quote-media'));
 });
 
+test('source-only 对自身媒体与 Quote 媒体的 ID 或 URL 碰撞 fail closed', () => {
+  const cases = [
+    {
+      label: 'same-id',
+      own: { id: 'collision', type: 'photo', url: 'https://pbs.twimg.com/media/own.jpg' },
+      quoted: { id: 'collision', type: 'photo', url: 'https://pbs.twimg.com/media/quoted.jpg' },
+      expected: { id_collision: true, url_collision: false }
+    },
+    {
+      label: 'same-url',
+      own: { id: 'own-photo', type: 'photo', url: 'https://pbs.twimg.com/media/shared.jpg' },
+      quoted: { id: 'quoted-photo', type: 'photo', url: 'https://pbs.twimg.com/media/shared.jpg' },
+      expected: { id_collision: false, url_collision: true }
+    },
+    {
+      label: 'missing-poster-video-same-id',
+      own: { id: 'video-collision', type: 'photo', url: 'https://pbs.twimg.com/media/own-video-id.jpg' },
+      quoted: {
+        id: 'video-collision',
+        type: 'video',
+        formats: [{
+          url: 'https://video.twimg.com/video/1280x720/quoted-id-only.mp4',
+          container: 'mp4',
+          bitrate: 3000000
+        }]
+      },
+      expected: { id_collision: true, url_collision: false }
+    },
+    {
+      label: 'missing-poster-video-same-url',
+      own: {
+        id: 'own-video',
+        type: 'video',
+        thumbnail_url: 'https://pbs.twimg.com/video_thumb/own-video.jpg',
+        formats: [{
+          url: 'https://video.twimg.com/video/1280x720/shared-video.mp4',
+          container: 'mp4',
+          bitrate: 3000000
+        }]
+      },
+      quoted: {
+        id: 'quoted-video',
+        type: 'video',
+        formats: [{
+          url: 'https://video.twimg.com/video/1280x720/shared-video.mp4',
+          container: 'mp4',
+          bitrate: 3000000
+        }]
+      },
+      expected: { id_collision: false, url_collision: true }
+    }
+  ];
+  for (const fixture of cases) {
+    const root = post(100, `碰撞测试 ${fixture.label}。\nhttps://x.com/quoted/status/900`, {
+      quoteId: 900,
+      media: [fixture.own]
+    });
+    root.quote.media = { all: [fixture.quoted] };
+    const route = routeThread(normalizeFixture(root));
+    const selectedMedia = route.selectedNodes.flatMap((selected) => selected.media);
+    assert(route.audit.ignored_quote_media_ids.includes(String(fixture.quoted.id)));
+    const collisions = quoteMediaCollisionAudit(selectedMedia, route.audit);
+    assert.equal(collisions.length, 1);
+    assert.equal(collisions[0].id_collision, fixture.expected.id_collision);
+    assert.equal(Boolean(collisions[0].url_hash_collisions.length), fixture.expected.url_collision);
+    assert.throws(
+      () => assertNoQuoteMediaCollisions(selectedMedia, route.audit, `test-${fixture.label}`),
+      (error) => error.code === 'quote_media_collision' && error.phase === `test-${fixture.label}`
+    );
+  }
+});
+
 test('Quote-only Thread 节点在去链接后无正文和自身媒体则跳过', () => {
   const root = post(100, '主贴正文。', { createdAt: '2026-08-05T00:00:00Z' });
   const quoteOnly = post(101, 'https://x.com/quoted/status/900?s=20', {
@@ -783,6 +914,79 @@ test('Quote-only Thread 节点在去链接后无正文和自身媒体则跳过',
   assert.equal(route.resolvedInputType, 'thread_with_quote');
   assert.deepEqual(ids(route), ['100']);
   assert.deepEqual(route.audit.excluded_statuses, [{ id: '101', reason: 'quote_only', ignored_quote_id: '900' }]);
+});
+
+test('source-only 遇到选中节点 Article 信号时要求改走 Article materializer', async () => {
+  const articleSignals = [
+    { field: 'article', value: { id: 'article-900', title: '完整 Article 标题' } },
+    { field: 'article', value: {} },
+    { field: 'article_id', value: 'article-901' },
+    { field: 'content_type', value: 'x_article' },
+    { field: 'is_article', value: true },
+    { field: 'card', value: { type: 'article' }, expectedField: 'card.type' }
+  ];
+  for (const [index, fixture] of articleSignals.entries()) {
+    const root = post(130 + index, '这里只是 Article teaser。');
+    root[fixture.field] = fixture.value;
+    const route = routeThread(normalizeFixture(root));
+    assert.throws(
+      () => assertNoSelectedArticleSignals(route),
+      (error) => (
+        error.code === 'x_article_route_required'
+        && error.requiredMaterializer === 'x_article'
+        && error.statusIds[0] === String(130 + index)
+        && error.articleNodes[0].signal_fields.includes(fixture.expectedField ?? fixture.field)
+      )
+    );
+  }
+
+  const root = post(140, '普通主贴引用一篇 Article。', { quoteId: 900 });
+  root.quote.article = { id: 'quoted-article', title: '引用 Article 不属于主贴正文' };
+  const quoteRoute = routeThread(normalizeFixture(root));
+  assert.deepEqual(assertNoSelectedArticleSignals(quoteRoute), { article_signal_count: 0 });
+
+  const threadRoot = post(150, 'Thread 根。', { createdAt: '2026-08-05T00:00:00Z' });
+  const articleChild = post(151, '子节点也是 Article teaser。', {
+    replyTo: 150,
+    createdAt: '2026-08-05T00:00:01Z'
+  });
+  articleChild.article = { id: 'article-child' };
+  const threadRoute = routeThread(normalizeFixture(threadRoot, [threadRoot, articleChild]));
+  assert.throws(
+    () => assertNoSelectedArticleSignals(threadRoute),
+    (error) => error.code === 'x_article_route_required' && error.statusIds[0] === '151'
+  );
+
+  const pureArticleChild = post(152, '', {
+    replyTo: 150,
+    createdAt: '2026-08-05T00:00:01Z'
+  });
+  pureArticleChild.article = { id: 'pure-article-child' };
+  const pureThreadRoute = routeThread(normalizeFixture(threadRoot, [threadRoot, pureArticleChild]));
+  assert.deepEqual(ids(pureThreadRoute), ['150']);
+  assert(pureThreadRoute.audit.excluded_statuses.some(({ id }) => id === '152'));
+  assert.throws(
+    () => assertNoSelectedArticleSignals(pureThreadRoute),
+    (error) => error.code === 'x_article_route_required' && error.statusIds[0] === '152'
+  );
+
+  const directory = integrationDirectory('article-route-required');
+  const sourceJson = path.join(directory, 'article.json');
+  const outputDirectory = path.join(directory, 'output');
+  const cliArticle = post(160, '');
+  cliArticle.article = { id: 'article-cli' };
+  fs.writeFileSync(sourceJson, JSON.stringify({ status: cliArticle, thread: [cliArticle] }), { flag: 'wx' });
+  await assert.rejects(
+    run({
+      url: 'https://x.com/writer/status/160',
+      sourceJson,
+      sourceOnly: true,
+      template: DEFAULT_TEMPLATE,
+      output: outputDirectory
+    }),
+    (error) => error.code === 'x_article_route_required' && error.statusIds[0] === '160'
+  );
+  assert(!fs.existsSync(outputDirectory));
 });
 
 test('他人回复不进入 Thread', () => {
@@ -911,7 +1115,532 @@ test('视频保留封面并选择无需上采样的安全 MP4 供成片完整嵌
       format: 'video/mp4'
     }]
   });
-  assert.throws(() => ownMedia(missingPoster), /缺少 thumbnail_url；拒绝静默忽略/u);
+  assert.throws(
+    () => ownMedia(missingPoster),
+    (error) => (
+      error.code === 'media_video_poster_missing'
+      && error.statusId === '102'
+      && error.mediaSource === 'all'
+      && error.mediaIndex === 0
+      && error.mediaId === 'video-without-poster'
+    )
+  );
+});
+
+test('缺少 media.all 的照片视频混合媒体不猜顺序，单一类型仍可 fallback', () => {
+  const photo = {
+    id: 'photo-1',
+    type: 'photo',
+    url: 'https://pbs.twimg.com/media/photo-1.jpg',
+    width: 1200,
+    height: 800
+  };
+  const video = {
+    id: 'video-1',
+    type: 'video',
+    thumbnail_url: 'https://pbs.twimg.com/video_thumb/video-1.jpg',
+    duration: 9.2,
+    formats: [{
+      url: 'https://video.twimg.com/video/1280x720/video-1.mp4',
+      container: 'mp4',
+      bitrate: 3000000
+    }]
+  };
+
+  const mixedWithoutOrder = post(103, '照片和视频混合。');
+  mixedWithoutOrder.media = { photos: [photo], videos: [video] };
+  assert.throws(
+    () => ownMedia(mixedWithoutOrder),
+    (error) => (
+      error.code === 'mixed_media_order_unavailable'
+      && error.statusId === '103'
+      && error.photoCount === 1
+      && error.videoCount === 1
+    )
+  );
+  assert.throws(
+    () => routeThread(normalizeFixture(mixedWithoutOrder)),
+    (error) => error.code === 'mixed_media_order_unavailable' && error.statusId === '103'
+  );
+
+  const photosOnly = post(104, '只有照片。');
+  photosOnly.media = { photos: [photo] };
+  assert.deepEqual(ownMedia(photosOnly).map(({ id, type }) => ({ id, type })), [
+    { id: 'photo-1', type: 'photo' }
+  ]);
+
+  const videosOnly = post(105, '只有视频。');
+  videosOnly.media = { videos: [video] };
+  assert.deepEqual(ownMedia(videosOnly).map(({ id, type }) => ({ id, type })), [
+    { id: 'video-1', type: 'video' }
+  ]);
+
+  const mixedWithOrder = post(106, '有明确顺序的混合媒体。', { media: [video, photo] });
+  assert.deepEqual(ownMedia(mixedWithOrder).map(({ id, type }) => ({ id, type })), [
+    { id: 'video-1', type: 'video' },
+    { id: 'photo-1', type: 'photo' }
+  ]);
+});
+
+test('media.all 的无效条目、未知类型、图片缺 URL 与空数组矛盾均结构化失败', () => {
+  const invalidEntries = [
+    { label: 'null', item: null },
+    { label: 'non-object', item: 'not-an-object' },
+    { label: 'empty-object', item: {} }
+  ];
+  for (const [caseIndex, fixture] of invalidEntries.entries()) {
+    const root = post(110 + caseIndex, `无效媒体条目：${fixture.label}。`, { media: [fixture.item] });
+    assert.throws(
+      () => ownMedia(root),
+      (error) => (
+        error.code === 'media_entry_invalid'
+        && error.statusId === String(110 + caseIndex)
+        && error.mediaSource === 'all'
+        && error.mediaIndex === 0
+      )
+    );
+  }
+
+  const unknownType = post(113, '未知媒体类型。', {
+    media: [{ id: 'audio-1', type: 'audio', url: 'https://pbs.twimg.com/media/audio-1' }]
+  });
+  assert.throws(
+    () => routeThread(normalizeFixture(unknownType)),
+    (error) => (
+      error.code === 'media_type_unknown'
+      && error.statusId === '113'
+      && error.mediaSource === 'all'
+      && error.mediaIndex === 0
+      && error.mediaId === 'audio-1'
+      && error.mediaType === 'audio'
+    )
+  );
+
+  const imageWithoutUrl = post(114, '图片缺少 URL。', {
+    media: [{ id: 'image-1', type: 'image', url: '   ' }]
+  });
+  assert.throws(
+    () => routeThread(normalizeFixture(imageWithoutUrl)),
+    (error) => (
+      error.code === 'media_image_url_missing'
+      && error.statusId === '114'
+      && error.mediaSource === 'all'
+      && error.mediaIndex === 0
+      && error.mediaId === 'image-1'
+      && error.mediaType === 'image'
+    )
+  );
+
+  const photoFallback = {
+    id: 'photo-fallback',
+    type: 'photo',
+    url: 'https://pbs.twimg.com/media/photo-fallback.jpg'
+  };
+  const contradictoryEmptyAll = post(115, '空 all 与照片数组矛盾。');
+  contradictoryEmptyAll.media = { all: [], photos: [photoFallback] };
+  assert.throws(
+    () => routeThread(normalizeFixture(contradictoryEmptyAll)),
+    (error) => (
+      error.code === 'media_all_inconsistent'
+      && error.statusId === '115'
+      && error.reason === 'empty_all_with_fallback_items'
+      && error.photoCount === 1
+      && error.videoCount === 0
+    )
+  );
+
+  const contradictoryEmptyAllWithVideo = post(116, '空 all 与视频数组矛盾。');
+  contradictoryEmptyAllWithVideo.media = {
+    all: [],
+    videos: [{
+      id: 'video-fallback',
+      type: 'video',
+      thumbnail_url: 'https://pbs.twimg.com/video_thumb/video-fallback.jpg'
+    }]
+  };
+  assert.throws(
+    () => ownMedia(contradictoryEmptyAllWithVideo),
+    (error) => (
+      error.code === 'media_all_inconsistent'
+      && error.statusId === '116'
+      && error.reason === 'empty_all_with_fallback_items'
+      && error.photoCount === 0
+      && error.videoCount === 1
+    )
+  );
+});
+
+test('持久化审计清洗媒体 URL 凭据、查询与 fragment，但运行时下载仍保留完整 URL', async () => {
+  const signedPhoto = 'https://media-user:media-pass@pbs.twimg.com/media/private-photo.jpg?token=photo-secret#photo-fragment';
+  const signedPoster = 'https://pbs.twimg.com/video_thumb/private-video.jpg?poster_token=poster-secret#poster-fragment';
+  const signedVideo = 'https://video.twimg.com/video/1280x720/private-video.mp4?signature=video-secret#video-fragment';
+  const signedAvatar = 'https://avatar-user:avatar-pass@pbs.twimg.com/profile_images/avatar.jpg?auth=avatar-secret#avatar-fragment';
+  const signedStatus = 'https://status-user:status-pass@x.com/writer/status/120?auth=status-secret#status-fragment';
+  const root = post(120, '带签名媒体。', {
+    author: { ...author, avatar_url: signedAvatar },
+    media: [
+      { id: 'private-photo', type: 'photo', url: signedPhoto },
+      {
+        id: 'private-video',
+        type: 'video',
+        thumbnail_url: signedPoster,
+        formats: [{ url: signedVideo, container: 'mp4', bitrate: 3000000 }]
+      }
+    ]
+  });
+  root.url = signedStatus;
+  const normalized = normalizeFixture(root);
+  const route = routeThread(normalized);
+  assert.equal(route.selectedNodes[0].media[0].url, signedPhoto);
+  assert.equal(route.selectedNodes[0].media[1].poster_url, signedPoster);
+  assert.equal(route.selectedNodes[0].media[1].video_url, signedVideo);
+
+  const status = parseStatusUrl('https://x.com/writer/status/120');
+  const selectedSource = selectedSourceForDelivery(status, normalized, route);
+  const persistedPhoto = selectedSource.selected_statuses[0].own_media[0];
+  const persistedVideo = selectedSource.selected_statuses[0].own_media[1];
+  assert.equal(selectedSource.selected_statuses[0].url, 'https://x.com/writer/status/120');
+  assert.equal(selectedSource.selected_statuses[0].author.avatar_url, 'https://pbs.twimg.com/profile_images/avatar.jpg');
+  assert.equal(persistedPhoto.url, 'https://pbs.twimg.com/media/private-photo.jpg');
+  assert.equal(persistedVideo.url, 'https://pbs.twimg.com/video_thumb/private-video.jpg');
+  assert.equal(persistedVideo.poster_url, 'https://pbs.twimg.com/video_thumb/private-video.jpg');
+  assert.equal(persistedVideo.video_url, 'https://video.twimg.com/video/1280x720/private-video.mp4');
+  assert.equal(persistedVideo.video_variant.url, 'https://video.twimg.com/video/1280x720/private-video.mp4');
+
+  const manifest = manifestFor({
+    options: { template: DEFAULT_TEMPLATE, video: false },
+    status,
+    normalized,
+    route,
+    templates: [TEMPLATES.find(({ id }) => id === DEFAULT_TEMPLATE)],
+    outputs: [{
+      source_full_text: '不进入 manifest',
+      author: { avatar_url: signedAvatar },
+      media: {
+        url: signedPoster,
+        poster_url: signedPoster,
+        video_url: signedVideo,
+        video_variant: { url: signedVideo },
+        native_video: { selected_variant: { url: signedVideo } }
+      }
+    }],
+    assets: {
+      avatar: { source_url: signedAvatar },
+      media: [{
+        url: signedPoster,
+        poster_url: signedPoster,
+        video_url: signedVideo,
+        video_variant: { url: signedVideo },
+        native_video: { selected_variant: { url: signedVideo } }
+      }]
+    },
+    previewSheet: {},
+    coverage: {},
+    outputDirectory: '/not-persisted'
+  });
+  assert.equal(manifest.assets.avatar.source_url, 'https://pbs.twimg.com/profile_images/avatar.jpg');
+  assert.equal(manifest.assets.media[0].video_url, 'https://video.twimg.com/video/1280x720/private-video.mp4');
+  assert.equal(manifest.assets.media[0].native_video.selected_variant.url, 'https://video.twimg.com/video/1280x720/private-video.mp4');
+  assert.equal(manifest.outputs[0].author.avatar_url, 'https://pbs.twimg.com/profile_images/avatar.jpg');
+
+  const persistedJson = JSON.stringify({ selectedSource, manifest });
+  for (const secret of [
+    'media-user', 'media-pass', 'photo-secret', 'photo-fragment',
+    'poster-secret', 'poster-fragment', 'video-secret', 'video-fragment',
+    'avatar-user', 'avatar-pass', 'avatar-secret', 'avatar-fragment',
+    'status-user', 'status-pass', 'status-secret', 'status-fragment'
+  ]) {
+    assert(!persistedJson.includes(secret), `持久化 JSON 泄漏：${secret}`);
+  }
+  assert.deepEqual(sanitizeRemoteUrlsForPersistence({
+    media_url: 'https://user:password@pbs.twimg.com/media/example.jpg?credential=secret#private'
+  }), {
+    media_url: 'https://pbs.twimg.com/media/example.jpg'
+  });
+
+  const originalFetch = globalThis.fetch;
+  const jpeg = Buffer.alloc(32);
+  jpeg[0] = 0xff;
+  jpeg[1] = 0xd8;
+  jpeg[2] = 0xff;
+  let requestedUrl = null;
+  globalThis.fetch = async (url) => {
+    requestedUrl = String(url);
+    return new Response(jpeg, {
+      status: 200,
+      headers: { 'content-type': 'image/jpeg', 'content-length': String(jpeg.length) }
+    });
+  };
+  try {
+    const directory = integrationDirectory('signed-url-download');
+    await materializeAsset(signedPoster, path.join(directory, 'signed-poster.jpg'));
+    assert.equal(requestedUrl, signedPoster);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('source-only Markdown 无人工标题并按节点嵌入媒体和 Thread marker', () => {
+  const root = post(100, '第一条正文。', {
+    createdAt: '2026-08-05T00:00:00Z',
+    media: [{
+      id: 'photo-1',
+      type: 'photo',
+      url: 'https://pbs.twimg.com/media/photo-1.jpg',
+      width: 1200,
+      height: 800
+    }]
+  });
+  const child = post(101, '第二条正文。', {
+    replyTo: 100,
+    createdAt: '2026-08-05T00:01:00Z',
+    media: [{
+      id: 'video-1',
+      type: 'video',
+      thumbnail_url: 'https://pbs.twimg.com/video_thumb/video-1.jpg',
+      duration: 9.2,
+      formats: [{
+        url: 'https://video.twimg.com/video/1280x720/video-1.mp4',
+        container: 'mp4',
+        bitrate: 3000000
+      }]
+    }]
+  });
+  const normalized = normalizeFixture(root, [root, child]);
+  const route = routeThread(normalized);
+  const assets = {
+    avatar: null,
+    media: [
+      {
+        id: 'photo-1',
+        type: 'photo',
+        source_post_id: '100',
+        relative_path: 'assets/media-1-1.jpg',
+        sha256: 'photo-sha',
+        bytes: 101,
+        content_type: 'image/jpeg'
+      },
+      {
+        id: 'video-1',
+        type: 'video',
+        source_post_id: '101',
+        relative_path: 'assets/media-2-1-poster.jpg',
+        sha256: 'poster-sha',
+        bytes: 202,
+        content_type: 'image/jpeg',
+        native_video: {
+          relative_path: 'assets/media-2-1-source.mp4',
+          sha256: 'video-sha',
+          bytes: 303,
+          content_type: 'video/mp4'
+        }
+      }
+    ]
+  };
+  const status = parseStatusUrl('https://x.com/writer/status/100');
+  const source = sourceMarkdownForDelivery(status, route, assets);
+  assert(source.markdown.startsWith('---\nmode: thread\npreserve_text: true\nsource_kind: x\n'));
+  assert(source.markdown.includes('source_url: "https://x.com/writer/status/100"'));
+  assert(source.markdown.includes('title_policy: include'));
+  assert(!source.markdown.includes('\n# '));
+  assert(!source.markdown.includes('Thread1:'));
+  assert.equal((source.markdown.match(/^Thread2:$/gmu) ?? []).length, 1);
+  assert(source.markdown.indexOf('第一条正文。') < source.markdown.indexOf('![](assets/media-1-1.jpg)'));
+  assert(source.markdown.indexOf('![](assets/media-1-1.jpg)') < source.markdown.indexOf('Thread2:'));
+  assert(source.markdown.indexOf('第二条正文。') < source.markdown.indexOf('![原生视频封面](assets/media-2-1-poster.jpg)'));
+  assert(source.markdown.includes('<!-- yichen-native-video: assets/media-2-1-source.mp4 -->'));
+  assert.deepEqual(source.units.map(({ marker, status_id }) => [marker, status_id]), [
+    [null, '100'], ['Thread2:', '101']
+  ]);
+
+  const sourceImport = sourceImportForDelivery({
+    status,
+    normalized,
+    route,
+    assets,
+    sourceMarkdownSha256: 'source-md-sha',
+    selectedSourceSha256: 'selected-source-sha',
+    routingAuditSha256: 'routing-audit-sha'
+  });
+  assert.equal(sourceImport.artificial_title_added, false);
+  assert.equal(sourceImport.checks.bound_media_count, 2);
+  assert.equal(sourceImport.checks.native_video_count, 1);
+  assert.equal(sourceImport.checks.all_native_videos_have_mp4, true);
+  assert.equal(sourceImport.checks.quote_media_collision_count, 0);
+  assert.deepEqual(sourceImport.units[1].media[0], {
+    order: 1,
+    global_order: 2,
+    source_media_id: 'video-1',
+    kind: 'video',
+    path: 'assets/media-2-1-source.mp4',
+    sha256: 'video-sha',
+    bytes: 303,
+    content_type: 'video/mp4',
+    poster: {
+      path: 'assets/media-2-1-poster.jpg',
+      sha256: 'poster-sha',
+      bytes: 202,
+      content_type: 'image/jpeg'
+    },
+    markdown_embed: '![原生视频封面](assets/media-2-1-poster.jpg)',
+    markdown_marker: '<!-- yichen-native-video: assets/media-2-1-source.mp4 -->'
+  });
+});
+
+test('source-only 单帖正文 marker-like 独占行可逆编码且围栏内不改', () => {
+  const root = post(100, [
+    '开头。',
+    'Thread2:',
+    'Post 7',
+    '```text',
+    'Part3:',
+    '```',
+    '结尾。'
+  ].join('\n'));
+  const route = routeThread(normalizeFixture(root));
+  const status = parseStatusUrl('https://x.com/writer/status/100');
+  const source = sourceMarkdownForDelivery(status, route, { avatar: null, media: [] });
+  assert.equal(source.literalMarkerEncoding.version, 'yichen-literal-marker/v1');
+  assert.deepEqual(
+    source.literalMarkerEncoding.replacements.map(({ unit_order, status_id, line_order, original_line }) => ({
+      unit_order, status_id, line_order, original_line
+    })),
+    [
+      { unit_order: 1, status_id: '100', line_order: 2, original_line: 'Thread2:' },
+      { unit_order: 1, status_id: '100', line_order: 3, original_line: 'Post 7' }
+    ]
+  );
+  for (const replacement of source.literalMarkerEncoding.replacements) {
+    assert.equal(source.markdown.split('\n')[replacement.source_markdown_line - 1], replacement.encoded_line);
+    assert(source.markdown.includes(replacement.encoded_line));
+  }
+  assert.match(source.markdown, /^Part3:$/mu);
+  assert.equal((source.markdown.match(/^Thread2:$/gmu) ?? []).length, 0);
+  const restoredText = encodeLiteralMarkerLines(root.text, { unitOrder: 1, statusId: '100' })
+    .replacements
+    .reduce((text, replacement) => text.replace(replacement.encoded_line, replacement.original_line),
+      encodeLiteralMarkerLines(root.text, { unitOrder: 1, statusId: '100' }).text);
+  assert.equal(restoredText, root.text);
+});
+
+test('source-only CommonMark fence 记录字符与长度，内层短 fence 和带后缀长 fence 不误关', () => {
+  const fakeEncoded = `Thread2:<!-- yichen-literal-marker:v1:${'a'.repeat(64)} -->`;
+  const root = post(100, [
+    '开头。',
+    '````markdown',
+    '```python',
+    'Thread2:',
+    fakeEncoded,
+    '```',
+    '````still-code',
+    'Part3:',
+    '`````   ',
+    'Post4:'
+  ].join('\n'));
+  const normalized = normalizeFixture(root);
+  const route = routeThread(normalized);
+  const status = parseStatusUrl('https://x.com/writer/status/100');
+  const assets = { avatar: null, media: [] };
+  const source = sourceMarkdownForDelivery(status, route, assets);
+  assert.deepEqual(
+    source.literalMarkerEncoding.replacements.map(({ line_order, original_line }) => ({ line_order, original_line })),
+    [{ line_order: 10, original_line: 'Post4:' }]
+  );
+  assert.match(source.markdown, /^Thread2:$/mu);
+  assert(source.markdown.includes(fakeEncoded));
+  assert.match(source.markdown, /^Part3:$/mu);
+  assert(!source.markdown.includes(`Post4:\n`));
+
+  const sourceImport = sourceImportForDelivery({
+    status,
+    normalized,
+    route,
+    assets,
+    literalMarkerEncoding: source.literalMarkerEncoding,
+    sourceMarkdownSha256: 'source-md-sha',
+    selectedSourceSha256: 'selected-source-sha',
+    routingAuditSha256: 'routing-audit-sha'
+  });
+  assertLiteralMarkerEncodingIntegrity(source.markdown, sourceImport);
+  assert.equal(sourceImport.checks.literal_marker_encoding_verified, true);
+});
+
+test('source-only 多帖结构 marker 与各节点正文 marker 编码不混淆', () => {
+  const root = post(100, '根正文。\nThread2:', { createdAt: '2026-08-05T00:00:00Z' });
+  const child = post(101, '子正文。\nPart 9', {
+    replyTo: 100,
+    createdAt: '2026-08-05T00:01:00Z'
+  });
+  const normalized = normalizeFixture(root, [root, child]);
+  const route = routeThread(normalized);
+  const status = parseStatusUrl('https://x.com/writer/status/100');
+  const assets = { avatar: null, media: [] };
+  const source = sourceMarkdownForDelivery(status, route, assets);
+  assert.equal((source.markdown.match(/^Thread2:$/gmu) ?? []).length, 1);
+  assert.deepEqual(
+    source.literalMarkerEncoding.replacements.map(({ unit_order, status_id, line_order, original_line }) => ({
+      unit_order, status_id, line_order, original_line
+    })),
+    [
+      { unit_order: 1, status_id: '100', line_order: 2, original_line: 'Thread2:' },
+      { unit_order: 2, status_id: '101', line_order: 2, original_line: 'Part 9' }
+    ]
+  );
+  const sourceImport = sourceImportForDelivery({
+    status,
+    normalized,
+    route,
+    assets,
+    literalMarkerEncoding: source.literalMarkerEncoding,
+    sourceMarkdownSha256: 'source-md-sha',
+    selectedSourceSha256: 'selected-source-sha',
+    routingAuditSha256: 'routing-audit-sha'
+  });
+  assert.equal(sourceImport.checks.literal_marker_replacement_count, 2);
+  assert.equal(sourceImport.literal_marker_encoding.replacements[1].unit_order, 2);
+});
+
+test('source-only 原生视频缺少 MP4 绑定时 fail closed', () => {
+  const root = post(100, '视频正文。', {
+    media: [{
+      id: 'video-1',
+      type: 'video',
+      thumbnail_url: 'https://pbs.twimg.com/video_thumb/video-1.jpg',
+      formats: [{
+        url: 'https://video.twimg.com/video/1280x720/video-1.mp4',
+        container: 'mp4',
+        bitrate: 3000000
+      }]
+    }]
+  });
+  const route = routeThread(normalizeFixture(root));
+  assert.throws(
+    () => sourceMarkdownForDelivery(parseStatusUrl('https://x.com/writer/status/100'), route, {
+      avatar: null,
+      media: [{
+        id: 'video-1',
+        type: 'video',
+        source_post_id: '100',
+        relative_path: 'assets/media-1-1-poster.jpg',
+        sha256: 'poster-sha',
+        bytes: 202,
+        content_type: 'image/jpeg'
+      }]
+    }),
+    /缺少已下载 MP4；拒绝只把海报当视频/u
+  );
+});
+
+test('通过 skills 目录软链接直接执行脚本不会静默退出', () => {
+  const directory = integrationDirectory('direct-symlink');
+  const script = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 'yichen_x_slicer.mjs');
+  const linkedScript = path.join(directory, 'yichen_x_slicer.mjs');
+  fs.symlinkSync(script, linkedScript);
+  assert.equal(isDirectExecution(linkedScript, new URL('./yichen_x_slicer.mjs', import.meta.url).href), true);
+  const execution = spawnSync(process.execPath, [linkedScript, '--help'], { encoding: 'utf8' });
+  assert.equal(execution.status, 0, execution.stderr);
+  assert.match(execution.stdout, /--source-only/u);
+  assert.match(execution.stdout, /用法/u);
 });
 
 test('长正文按顺序完整拆帧且外围标题来自原文', () => {
@@ -950,6 +1679,187 @@ test('Emoji 字形与密集换行不会被拆坏或挤进单帧', () => {
   assert.equal(denseSlices.join(''), denseLines);
   assert(denseSlices.length > 1);
   assert(denseSlices.every((slice) => slice.split('\n').length <= 18));
+});
+
+test('source-only 图片按 JPEG PNG WebP AVIF GIF 魔数落真实扩展名', async () => {
+  const jpeg = Buffer.alloc(32);
+  jpeg.set([0xff, 0xd8, 0xff, 0xe0], 0);
+  const png = Buffer.alloc(32);
+  png.set([137, 80, 78, 71, 13, 10, 26, 10], 0);
+  const webp = Buffer.alloc(32);
+  webp.write('RIFF', 0, 'ascii');
+  webp.writeUInt32LE(24, 4);
+  webp.write('WEBP', 8, 'ascii');
+  const avif = Buffer.alloc(32);
+  avif.writeUInt32BE(24, 0);
+  avif.write('ftyp', 4, 'ascii');
+  avif.write('mif1', 8, 'ascii');
+  avif.writeUInt32BE(0, 12);
+  avif.write('avif', 16, 'ascii');
+  const gif = Buffer.alloc(32);
+  gif.write('GIF89a', 0, 'ascii');
+  const fixtures = [
+    { name: 'jpeg', bytes: jpeg, extension: '.jpg', contentType: 'image/jpeg' },
+    { name: 'png', bytes: png, extension: '.png', contentType: 'image/png' },
+    { name: 'webp', bytes: webp, extension: '.webp', contentType: 'image/webp' },
+    { name: 'avif', bytes: avif, extension: '.avif', contentType: 'image/avif' },
+    { name: 'gif', bytes: gif, extension: '.gif', contentType: 'image/gif' }
+  ];
+  for (const fixture of fixtures) {
+    assert.deepEqual(detectImageFormat(fixture.bytes), {
+      extension: fixture.extension,
+      content_type: fixture.contentType
+    });
+  }
+
+  const directory = integrationDirectory('source-image-extension');
+  fs.mkdirSync(path.join(directory, 'assets'));
+  const fixtureByUrl = new Map(fixtures.map((fixture) => [
+    `https://pbs.twimg.com/media/source-only-${fixture.name}`,
+    fixture
+  ]));
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const fixture = fixtureByUrl.get(String(url));
+    if (!fixture) throw new Error(`unexpected test URL: ${String(url)}`);
+    return new Response(fixture.bytes, {
+      status: 200,
+      headers: {
+        'content-type': fixture.contentType,
+        'content-length': String(fixture.bytes.length)
+      }
+    });
+  };
+  try {
+    const downloaded = [];
+    for (let index = 0; index < fixtures.length; index += 1) {
+      const fixture = fixtures[index];
+      const record = await materializeSourceImage(
+        `https://pbs.twimg.com/media/source-only-${fixture.name}`,
+        directory,
+        `assets/media-1-${index + 1}`
+      );
+      assert.equal(record.relative_path, `assets/media-1-${index + 1}${fixture.extension}`);
+      assert.equal(record.content_type, fixture.contentType);
+      assert.equal(record.extension, fixture.extension);
+      const downloadedPath = path.join(directory, record.relative_path);
+      assert(fs.existsSync(downloadedPath));
+      assert.deepEqual(fs.readFileSync(downloadedPath), fixture.bytes);
+      assert(!fs.existsSync(path.join(directory, `assets/media-1-${index + 1}.download`)));
+      downloaded.push(record);
+    }
+
+    const root = post(300, '格式测试。', {
+      media: fixtures.map((fixture, index) => ({
+        id: `photo-${index + 1}`,
+        type: 'photo',
+        url: `https://pbs.twimg.com/media/source-only-${fixture.name}`
+      }))
+    });
+    const normalized = normalizeFixture(root);
+    const route = routeThread(normalized);
+    const assets = {
+      avatar: null,
+      media: downloaded.map((record, index) => ({
+        ...route.selectedNodes[0].media[index],
+        ...record,
+        source_post_id: '300'
+      }))
+    };
+    const status = parseStatusUrl('https://x.com/writer/status/300');
+    const source = sourceMarkdownForDelivery(status, route, assets);
+    for (let index = 0; index < fixtures.length; index += 1) {
+      assert(source.markdown.includes(`![](assets/media-1-${index + 1}${fixtures[index].extension})`));
+    }
+    const sourceImport = sourceImportForDelivery({
+      status,
+      normalized,
+      route,
+      assets,
+      literalMarkerEncoding: source.literalMarkerEncoding,
+      sourceMarkdownSha256: 'source-md-sha',
+      selectedSourceSha256: 'selected-source-sha',
+      routingAuditSha256: 'routing-audit-sha'
+    });
+    assert.deepEqual(
+      sourceImport.units[0].media.map(({ path: mediaPath, content_type: contentType, sha256 }) => ({ mediaPath, contentType, sha256 })),
+      fixtures.map((fixture, index) => ({
+        mediaPath: `assets/media-1-${index + 1}${fixture.extension}`,
+        contentType: fixture.contentType,
+        sha256: downloaded[index].sha256
+      }))
+    );
+
+    const videoPoster = await materializeSourceImage(
+      'https://pbs.twimg.com/media/source-only-webp',
+      directory,
+      'assets/media-2-1-poster'
+    );
+    assert.equal(videoPoster.relative_path, 'assets/media-2-1-poster.webp');
+    assert.deepEqual(
+      fs.readFileSync(path.join(directory, videoPoster.relative_path)),
+      webp
+    );
+    const videoRoot = post(301, '视频海报格式测试。', {
+      media: [{
+        id: 'video-webp-poster',
+        type: 'video',
+        thumbnail_url: 'https://pbs.twimg.com/media/source-only-webp',
+        formats: [{
+          url: 'https://video.twimg.com/video/1280x720/video.mp4',
+          container: 'mp4',
+          bitrate: 3000000
+        }]
+      }]
+    });
+    const videoNormalized = normalizeFixture(videoRoot);
+    const videoRoute = routeThread(videoNormalized);
+    const videoAssets = {
+      avatar: null,
+      media: [{
+        ...videoRoute.selectedNodes[0].media[0],
+        ...videoPoster,
+        source_post_id: '301',
+        native_video: {
+          relative_path: 'assets/media-2-1-source.mp4',
+          sha256: 'video-sha',
+          bytes: 999,
+          content_type: 'video/mp4'
+        }
+      }]
+    };
+    const videoStatus = parseStatusUrl('https://x.com/writer/status/301');
+    const videoSource = sourceMarkdownForDelivery(videoStatus, videoRoute, videoAssets);
+    assert(videoSource.markdown.includes('![原生视频封面](assets/media-2-1-poster.webp)'));
+    assert(videoSource.markdown.includes('<!-- yichen-native-video: assets/media-2-1-source.mp4 -->'));
+    const videoImport = sourceImportForDelivery({
+      status: videoStatus,
+      normalized: videoNormalized,
+      route: videoRoute,
+      assets: videoAssets,
+      literalMarkerEncoding: videoSource.literalMarkerEncoding,
+      sourceMarkdownSha256: 'source-md-sha',
+      selectedSourceSha256: 'selected-source-sha',
+      routingAuditSha256: 'routing-audit-sha'
+    });
+    assert.deepEqual(videoImport.units[0].media[0].poster, {
+      path: 'assets/media-2-1-poster.webp',
+      sha256: videoPoster.sha256,
+      bytes: webp.length,
+      content_type: 'image/webp'
+    });
+
+    const defaultPath = path.join(directory, 'assets/default-render-name.jpg');
+    const defaultRecord = await materializeAsset(
+      'https://pbs.twimg.com/media/source-only-png',
+      defaultPath
+    );
+    assert.equal(defaultRecord.extension, '.png');
+    assert(fs.existsSync(defaultPath));
+    assert(!fs.existsSync(path.join(directory, 'assets/default-render-name.png')));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test('缺失指标不伪装成真实零，外部本地素材一律拒绝', async () => {

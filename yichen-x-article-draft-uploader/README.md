@@ -258,3 +258,7 @@ x-article-draft-uploader/
 第三方材料继续适用各自许可证和仓库根目录的 `THIRD_PARTY_NOTICES.md`。
 
 部分 Markdown 解析流程参考并迁移自 `wshuyi/x-article-publisher-skill`，详见仓库根目录 `THIRD_PARTY_NOTICES.md`。
+
+## 公开版本与 Ailu 集成
+
+本目录的公开发行版本以 `VERSION` 为准。独立私有 Ailu 集成使用不同运行时、账号绑定与来源校验契约，不随本目录分发；私有版本号不能用来替换本目录的安装要求。保持现有公开许可证及第三方授权，参见[版本维护](../docs/skill-maintenance.md)。

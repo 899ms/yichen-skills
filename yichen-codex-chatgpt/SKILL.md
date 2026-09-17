@@ -119,3 +119,7 @@ Report:
 - any blocker, uncertainty, failed marker, unavailable source/tool, or action not performed.
 
 Use [examples/routing-prompts.md](examples/routing-prompts.md) for maintenance regression checks.
+
+## Optional explicit collaboration modes
+
+The default remains the read-only architect/reviewer C2C route. Only on explicit user selection, read [Remote Extended MCP Lite](references/remote-extended.md) or [Full Harness Proxy](references/full-harness-proxy.md). These are optional workflow contracts, not bundled runtimes or grants of access. Resolve the separately installed compatible runtime through [setup](references/setup.md); absent dependencies mean BLOCKED, never silently activate another profile. Preserve every action-time local approval described by the selected mode.

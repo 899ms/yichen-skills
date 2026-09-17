@@ -136,3 +136,12 @@ python3 test_wecom_local_vault.py
 python3 -m py_compile *.py
 python3 "$HOME/.codex/skills/.system/skill-creator/scripts/quick_validate.py" "$SKILL_DIR"
 ```
+
+## 快照读取与排错
+
+- 查询使用静止的明文快照，以 `mode=ro&immutable=1` 打开；不把 immutable 用于运行中的源库。
+- 先用 `python3 -c "import Crypto"` 检查解释器依赖；缺少时报告，不自动安装。
+- `--data-dir` 接受数据库目录路径，不接受发现结果中的 dataset_id。多个数据集时明确选择，不能猜测账号。
+- 快照只包含创建时已有数据；最新消息查询前检查快照时间。会话摘要时间可能滞后，以消息表的实际时间为准。
+- 文件消息与媒体正文不同；该查询器不解密媒体。
+- 兼容性必须区分客户端版本/构建号、操作系统、已有密钥解密和重新捕获密钥，不能由“5.x”推断全版本支持。

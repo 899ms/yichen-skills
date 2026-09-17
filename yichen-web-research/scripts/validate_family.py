@@ -387,14 +387,14 @@ def main() -> int:
                 "yichen-asr",
             )
         ),
-        "hengzong_reference_is_single_bounded_protocol": {
+        "research_references_match_supported_operations": {
             path.name
             for path in (
                 SKILLS_ROOT / "yichen-web-research/references"
             ).glob("*")
             if path.is_file()
         }
-        == {"hengzong-research.md"},
+        == {"hengzong-research.md", "hengzong-execution-contract.md", "backend-readiness.md"},
         "router_scripts_are_bounded": {
             path.name
             for path in (

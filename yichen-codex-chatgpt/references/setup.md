@@ -61,3 +61,7 @@ Names and scripts may differ in another implementation, but the security and sta
 - Never place credentials, Tunnel/App/connector IDs, private URLs, account identifiers, browser storage, or populated local configuration in this repository.
 - Keep `<EVIDENCE_ROOT>` outside Git repositories. The included `.gitignore` is a backup guard, not permission to save unsafe evidence.
 - This Skill does not provision, register, or publish a new Tunnel. After explicit exposure/rebind confirmation, it may start only an already configured compatible local runtime as described in [review.md](review.md).
+
+## Optional extended profile
+
+`<EXTENDED_RUNTIME_ROOT>` and `<DEFAULT_RUNTIME_ROOT>` are user-configured canonical absolute directories for separately installed compatible runtimes. No companion runtime is bundled or automatically installed. Extended mode uses a distinct Tunnel/profile and eleven-tool manifest; see [remote-extended](remote-extended.md). The seven-tool read-only contract above applies to the default profile. Verify the optional runtime and obtain the specified approvals before exposing any project.

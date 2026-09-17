@@ -100,6 +100,23 @@ class KnownXUrlTests(unittest.TestCase):
         )
         self.assertEqual(parent["id"], "1888888888888888888")
 
+    def test_resolve_article_rechecks_fetched_parent_and_article_identity(self):
+        article_id = "2032093606551707648"
+        parent_id = "1888888888888888888"
+        search_payload = {
+            "results": [status(id=parent_id, article={"id": article_id})]
+        }
+        for fetched in (
+            status(id="1777777777777777777", article={"id": article_id}),
+            status(id=parent_id, article={"id": "1111111111111111111"}),
+        ):
+            with self.subTest(fetched_id=fetched["id"]), mock.patch.object(
+                XURL, "fetch_json", return_value=search_payload
+            ), mock.patch.object(XURL, "fetch_status", return_value=fetched):
+                with self.assertRaises(XURL.KnownUrlError) as raised:
+                    XURL.resolve_article(article_id, timeout=30)
+            self.assertEqual(raised.exception.category, "source_identity_mismatch")
+
     def test_article_markdown_renders_structure_links_and_media(self):
         article = {
             "id": "2032093606551707648",
@@ -171,6 +188,78 @@ class KnownXUrlTests(unittest.TestCase):
             "![Chart](https://pbs.twimg.com/media/chart.jpg)",
             markdown,
         )
+        self.assertEqual(XURL.article_media(article)[0]["kind"], "photo")
+
+    def test_article_video_projection_keeps_signal_and_never_renders_poster_as_photo(self):
+        poster_url = "https://pbs.twimg.com/media/video-poster.jpg"
+        article = {
+            "id": "2032093606551707648",
+            "title": "Video article",
+            "content": {
+                "blocks": [
+                    {"type": "unstyled", "text": "Body", "entityRanges": []},
+                    {
+                        "type": "atomic",
+                        "text": " ",
+                        "entityRanges": [{"key": 0, "offset": 0, "length": 1}],
+                    },
+                ],
+                "entityMap": [
+                    {
+                        "key": "0",
+                        "value": {
+                            "type": "MEDIA",
+                            "data": {
+                                "caption": "Video",
+                                "mediaItems": [{"mediaId": "video-1234567890"}],
+                            },
+                        },
+                    }
+                ],
+            },
+            "media_entities": [
+                {
+                    "media_id": "video-1234567890",
+                    "media_info": {
+                        "__typename": "ApiVideo",
+                        "thumbnail_url": poster_url,
+                        "duration_millis": 1234,
+                        "variants": [
+                            {
+                                "type": "video/mp4",
+                                "bitrate": 832000,
+                                "url": "https://video.twimg.com/ext_tw_video/123/pu/vid/video.mp4?token=redacted",
+                            }
+                        ],
+                    },
+                }
+            ],
+        }
+        projected = XURL.article_projection(article)
+        media = projected["media"][0]
+        self.assertEqual(media["kind"], "video")
+        self.assertEqual(media["url"], poster_url)
+        self.assertEqual(media["video_info"]["variant_count"], 1)
+        self.assertEqual(
+            media["video_info"]["variants"][0]["url"],
+            "https://video.twimg.com/ext_tw_video/123/pu/vid/video.mp4",
+        )
+        self.assertNotIn(poster_url, projected["body_markdown"])
+
+    def test_article_thumbnail_without_type_is_projected_unknown(self):
+        article = {
+            "media_entities": [
+                {
+                    "media_id": "unknown-1",
+                    "media_info": {
+                        "thumbnail_url": "https://pbs.twimg.com/media/ambiguous.jpg"
+                    },
+                }
+            ]
+        }
+        media = XURL.article_media(article)[0]
+        self.assertEqual(media["kind"], "unknown")
+        self.assertEqual(XURL.media_lookup(article), {})
 
     def test_article_projection_contains_body_but_not_raw_draftjs(self):
         article = {
@@ -186,7 +275,59 @@ class KnownXUrlTests(unittest.TestCase):
         }
         projected = XURL.article_projection(article)
         self.assertEqual(projected["body_markdown"], "Full body")
+        self.assertTrue(projected["render_complete"])
+        self.assertEqual(projected["render_errors"], [])
         self.assertNotIn("content", projected)
+
+    def test_article_render_audit_rejects_malformed_block_atomic_and_link(self):
+        article = {
+            "id": "2032093606551707648",
+            "title": "Malformed article",
+            "content": {
+                "blocks": [
+                    {"type": "unstyled", "text": "Visible body", "entityRanges": []},
+                    None,
+                    {
+                        "type": "atomic",
+                        "text": " ",
+                        "entityRanges": [{"key": 0, "offset": 0, "length": 1}],
+                    },
+                    {
+                        "type": "unstyled",
+                        "text": "bad link",
+                        "entityRanges": [
+                            {"key": 1, "offset": "zero", "length": 3}
+                        ],
+                    },
+                    {"type": "unstyled", "text": "", "entityRanges": []},
+                ],
+                "entityMap": [
+                    {
+                        "key": "0",
+                        "value": {
+                            "type": "MEDIA",
+                            "data": {"mediaItems": [{"mediaId": "missing-media"}]},
+                        },
+                    },
+                    {
+                        "key": "1",
+                        "value": {
+                            "type": "LINK",
+                            "data": {"url": "https://example.com"},
+                        },
+                    },
+                ],
+            },
+            "media_entities": [],
+        }
+        projected = XURL.article_projection(article)
+        self.assertIn("Visible body", projected["body_markdown"])
+        self.assertFalse(projected["render_complete"])
+        categories = {error["category"] for error in projected["render_errors"]}
+        self.assertIn("block_not_object", categories)
+        self.assertIn("atomic_media_unrenderable", categories)
+        self.assertIn("link_range_invalid", categories)
+        self.assertEqual(projected["render_audit"]["status"], "incomplete")
 
     def test_authenticated_fallbacks_are_authorization_gated(self):
         parsed = XURL.parse_known_url(

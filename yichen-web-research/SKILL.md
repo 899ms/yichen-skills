@@ -148,3 +148,7 @@ opencli doctor
   - `${YICHEN_SKILLS_ROOT:-$HOME/.agents/skills}/yichen-asr/SKILL.md`
 - 子 Skill 是独立的执行规则，不是可递归调用的函数。路由后直接按目标 Skill 执行，目标 Skill 不得再回到本总入口。
 - 若子 Skill、必要后端、登录态或额度不可用，如实报告具体缺口；不得把“已经正确路由”表述成“外部平台必然成功”。
+
+## 按需读取更新后的执行规范
+
+需要选择或排查后端时，读取 [后端就绪说明](references/backend-readiness.md)。横纵研究执行前，读取 [执行契约](references/hengzong-execution-contract.md)，保持证据与范围门禁。给定全文总结和单次事实查证不触发多阶段研究。有界站点归档须由用户明确指定同源路径、页数和深度上限，交给 `yichen-content-archive`，不得自动扩展站点。

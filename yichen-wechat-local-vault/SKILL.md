@@ -195,3 +195,7 @@ python3 {{SKILL_DIR}}/scripts/export_chat.py --chat-id "contact_username" --sinc
 - `scripts/list_contacts.py`：列出联系人和群聊。
 - `scripts/wechat_digest.py`：按天摘要脚本，仅在用户明确要摘要时使用。
 - `scripts/search_sns.py`：朋友圈搜索辅助。
+
+## 查询新鲜度与账号隔离
+
+任务依赖最新消息时，先核对对应账号的快照时间，并在已授权范围内增量刷新；不得用旧同类消息替代目标。多账号安装须显式配置默认账号，第二账号仅按用户指定选择；账号编号不等于双开容器编号。每个账号独立配置、密钥、快照、增量状态和导出目录，不临时覆盖全局配置切换账号。Windows snapshot 路线不触发 Mac 刷新。

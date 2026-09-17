@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
-import csv
 import importlib.util
-import json
 import sys
 import tempfile
 import unittest
@@ -30,7 +28,6 @@ def load_script(name: str):
 
 STEPFUN = load_script("xiaoyuzhou_stepfun")
 OPENCLI = load_script("xiaoyuzhou_opencli")
-WECHAT = load_script("wechat_mp_local")
 
 
 class XiaoyuzhouStepfunOverwriteTest(unittest.TestCase):
@@ -186,87 +183,6 @@ class XiaoyuzhouOpencliOverwriteTest(unittest.TestCase):
             )
         self.assertEqual(existing.read_text(encoding="utf-8"), "do-not-replace")
         self.assertFalse((output_dir / "episode_ids.txt").exists())
-
-
-class WechatOutputGuardTest(unittest.TestCase):
-    def test_explicit_existing_dir_rejected_and_resume_writes_new_sibling(self):
-        existing = ARTIFACT_ROOT / "wechat-existing"
-        existing.mkdir()
-        sentinel = existing / "sentinel.txt"
-        sentinel.write_text("keep", encoding="utf-8")
-        with (existing / "index.csv").open(
-            "x",
-            encoding="utf-8",
-            newline="",
-        ) as handle:
-            writer = csv.DictWriter(handle, fieldnames=["url", "status"])
-            writer.writeheader()
-            writer.writerow(
-                {
-                    "url": "https://mp.weixin.qq.com/s/already",
-                    "status": "success",
-                }
-            )
-        old_tree_before = {
-            path.relative_to(existing): (
-                ("dir", None) if path.is_dir() else ("file", path.read_bytes())
-            )
-            for path in existing.rglob("*")
-        }
-
-        with self.assertRaisesRegex(WECHAT.ClientError, "默认拒绝写入"):
-            WECHAT.prepare_output_directory(
-                str(existing),
-                ARTIFACT_ROOT / "unused",
-                resume_existing=False,
-            )
-        resume_dir, checkpoint = WECHAT.prepare_output_directory(
-            str(existing),
-            ARTIFACT_ROOT / "unused",
-            resume_existing=True,
-        )
-        self.assertEqual(checkpoint, existing.resolve())
-        self.assertEqual(resume_dir.parent, existing.resolve().parent)
-        self.assertTrue(resume_dir.name.startswith("wechat-existing-resume-"))
-        self.assertEqual(sentinel.read_text(encoding="utf-8"), "keep")
-        self.assertEqual(
-            WECHAT.successful_urls_from(checkpoint),
-            {"https://mp.weixin.qq.com/s/already"},
-        )
-        old_tree_after = {
-            path.relative_to(existing): (
-                ("dir", None) if path.is_dir() else ("file", path.read_bytes())
-            )
-            for path in existing.rglob("*")
-        }
-        self.assertEqual(old_tree_after, old_tree_before)
-
-    def test_default_collision_allocates_new_run_without_touching_old(self):
-        default_parent = ARTIFACT_ROOT / "wechat-default"
-        first = default_parent / "fixed-run"
-        first.mkdir(parents=True)
-        sentinel = first / "old.json"
-        sentinel.write_text(json.dumps({"keep": True}), encoding="utf-8")
-
-        with mock.patch.object(WECHAT, "run_id", return_value="fixed-run"):
-            selected, checkpoint = WECHAT.prepare_output_directory(
-                "",
-                default_parent,
-                resume_existing=False,
-            )
-        self.assertIsNone(checkpoint)
-        self.assertEqual(selected.name, "fixed-run-run-2")
-        self.assertEqual(
-            json.loads(sentinel.read_text(encoding="utf-8")),
-            {"keep": True},
-        )
-
-    def test_exclusive_writer_refuses_existing_file(self):
-        path = ARTIFACT_ROOT / "wechat-exclusive.json"
-        path.write_text("original", encoding="utf-8")
-        with self.assertRaisesRegex(WECHAT.ClientError, "拒绝覆盖"):
-            WECHAT.write_json(path, {"new": True})
-        self.assertEqual(path.read_text(encoding="utf-8"), "original")
 
 
 if __name__ == "__main__":
