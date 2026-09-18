@@ -6,18 +6,22 @@ A skill collection for creators who want to streamline writing, X content slicin
 
 ## Maintainer
 
-Created and maintained by **逸尘 (Yichen)**.
+Created and maintained by **逸尘 (Yichen)**, a serial entrepreneur born in 2006, law student, and founder of Yu Hackathon (渝客松), working on AI products, content, and services for businesses.
 
-- WeChat: `yichen365ai`
+- Personal website: [yichen.ai](https://yichen.ai/) · [About me](https://yichen.ai/about/)
+- Social media: [X](https://x.com/gengdaJ) · [YouTube](https://www.youtube.com/@yichenai) · [Douyin](https://v.douyin.com/diF63UgPZtI) · [Xiaohongshu](https://xhslink.com/m/3eiF47bau17)
+- WeChat: `yichen10801`; backup: `yichen365ai`
 - When adding me, please include `GitHub` in the verification message
+
+See [yichen.ai](https://yichen.ai/) for current personal information, products, services, and contact details.
 
 ## Personal Use and Commercial Authorization
 
 This repository is available only for personal learning and non-commercial personal use. Commercial use—including client delivery, paid products or services, internal company deployment, marketplace packaging, and course bundling—requires the author's prior explicit written authorization.
 
-To request commercial authorization, contact me on WeChat at `yichen365ai` and include `Commercial Authorization` in the verification message. Sending a contact request does not itself grant permission; commercial use is allowed only after you receive explicit written authorization.
+To request commercial authorization, contact me on WeChat at `yichen10801` and include `Commercial Authorization` in the verification message. Sending a contact request does not itself grant permission; commercial use is allowed only after you receive explicit written authorization.
 
-Join **TradeWinds**, Yichen’s paid community, to unlock commercial authorization for all Skills in this repository and connect with more peers born in 2005 or later and experienced practitioners with proven results. Contact Yichen on WeChat (`yichen365ai`) for membership pricing. The specific scope is subject to written authorization; third-party components remain governed by their original licenses.
+Join **TradeWinds**, Yichen’s paid community, to unlock commercial authorization for all Skills in this repository and connect with more peers born in 2005 or later and experienced practitioners with proven results. Contact Yichen on WeChat (`yichen10801`) for membership pricing. The specific scope is subject to written authorization; third-party components remain governed by their original licenses.
 
 ## What This Repo Does
 
